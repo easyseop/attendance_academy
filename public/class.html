@@ -41,6 +41,25 @@
   </div>
 
   <div class="card">
+    <h2>📌 NFC 태그 / 인쇄용 고정 QR</h2>
+    <p class="muted" style="margin-bottom:10px;">
+      아래 주소를 NFC 스티커에 기록해 교실 문 옆에 붙여두면, 학생이 <strong>폰을 갖다 대기만 해도</strong> 출석됩니다
+      (카메라 조준 불필요 · 수업 시작 후 자동으로 해당 수업에 연결).
+      같은 주소의 QR을 인쇄해 붙여도 동일하게 동작합니다.
+      NFC 기록은 무료 앱 <strong>NFC Tools</strong>에서 [쓰기 → URL 추가] 한 번이면 됩니다 (NTAG213/215 스티커 권장).
+    </p>
+    <div class="row">
+      <input id="tap-url" readonly style="flex:1;min-width:220px;" onclick="this.select()">
+      <button id="copy-tap">주소 복사</button>
+      <button class="ghost" id="show-tap-qr" style="color:var(--primary);border-color:var(--primary);">인쇄용 QR 보기</button>
+    </div>
+    <div id="tap-qr-box" style="display:none;text-align:center;margin-top:14px;">
+      <img id="tap-qr-img" style="width:280px;border:1px solid var(--line);border-radius:12px;padding:8px;background:#fff;">
+      <p class="muted">이 QR은 고정입니다 — 인쇄해서 문 옆에 붙여두세요.</p>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>지난 수업 기록</h2>
     <table>
       <thead><tr><th>수업 시작</th><th>종료</th><th>출석 인원</th><th></th></tr></thead>
@@ -78,6 +97,25 @@ async function load() {
       <td style="text-align:right;"><a href="/session.html?id=${ss.id}"><button class="ghost" style="color:var(--primary);border-color:var(--primary);">보기</button></a></td>
     </tr>`).join('') || '<tr><td colspan="4" class="muted">아직 수업 기록이 없습니다.</td></tr>';
 }
+
+async function loadTapInfo() {
+  const { url, dataUrl } = await api(`/api/admin/classes/${classId}/tap-info`);
+  document.getElementById('tap-url').value = url;
+  document.getElementById('tap-qr-img').src = dataUrl;
+}
+
+document.getElementById('copy-tap').onclick = async () => {
+  const input = document.getElementById('tap-url');
+  input.select();
+  try { await navigator.clipboard.writeText(input.value); } catch { document.execCommand('copy'); }
+  document.getElementById('copy-tap').textContent = '복사됨!';
+  setTimeout(() => { document.getElementById('copy-tap').textContent = '주소 복사'; }, 1500);
+};
+
+document.getElementById('show-tap-qr').onclick = () => {
+  const box = document.getElementById('tap-qr-box');
+  box.style.display = box.style.display === 'none' ? '' : 'none';
+};
 
 document.getElementById('st-add').onclick = async () => {
   const errEl = document.getElementById('st-error');
@@ -119,6 +157,7 @@ document.getElementById('delete-class').onclick = async () => {
 };
 
 load().catch(() => {});
+loadTapInfo().catch(() => {});
 </script>
 </body>
 </html>

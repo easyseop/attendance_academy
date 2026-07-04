@@ -55,6 +55,7 @@ function esc(s) {
 }
 
 const STATUS_LABEL = { present: '출석', late: '지각', absent: '결석' };
+const METHOD_LABEL = { qr: 'QR', tap: 'NFC/태그', kiosk: '터치', manual: '수동' };
 
 function statusBadge(status) {
   if (!status) return '<span class="badge none">미체크</span>';

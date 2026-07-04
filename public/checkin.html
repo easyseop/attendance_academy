@@ -17,8 +17,11 @@
 <script src="/js/common.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
-const session_id = params.get('s');
-const qr_token = params.get('t');
+// 회전 QR(s+t) 또는 NFC 태그/인쇄 QR(c) 두 경로 모두 지원
+const payload = params.get('c')
+  ? { class_token: params.get('c') }
+  : { session_id: params.get('s'), qr_token: params.get('t') };
+const valid = params.get('c') || (params.get('s') && params.get('t'));
 const panel = document.getElementById('panel');
 
 function showError(msg) {
@@ -65,7 +68,7 @@ function showRegister(data) {
         const res = await fetch('/api/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id, qr_token, student_id: s.id }),
+          body: JSON.stringify({ ...payload, student_id: s.id }),
         });
         const d = await res.json();
         if (!res.ok) return showError(d.error || '등록에 실패했습니다.');
@@ -77,12 +80,12 @@ function showRegister(data) {
 }
 
 (async () => {
-  if (!session_id || !qr_token) return showError('잘못된 접근입니다. 교실의 QR코드를 스캔해 주세요.');
+  if (!valid) return showError('잘못된 접근입니다. 교실의 QR코드나 NFC 태그를 이용해 주세요.');
   try {
     const res = await fetch('/api/checkin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id, qr_token }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) return showError(data.error || '출석 처리에 실패했습니다.');

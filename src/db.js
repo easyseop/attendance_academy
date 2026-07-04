@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS classes (
   name TEXT NOT NULL,
   schedule_text TEXT DEFAULT '',
   late_after_min INTEGER NOT NULL DEFAULT 10,
+  -- NFC 태그/인쇄 QR에 담기는 반별 고정 토큰 (문 옆 태그에 1회 기록해두면 됨)
+  nfc_token TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 
@@ -48,7 +50,8 @@ CREATE TABLE IF NOT EXISTS attendance (
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
   status TEXT NOT NULL CHECK (status IN ('present', 'late', 'absent')),
-  method TEXT NOT NULL DEFAULT 'qr' CHECK (method IN ('qr', 'manual')),
+  -- qr: 회전 QR 스캔 / tap: NFC 태그·고정 QR / kiosk: 태블릿 이름 터치 / manual: 선생님 수동
+  method TEXT NOT NULL DEFAULT 'qr' CHECK (method IN ('qr', 'tap', 'kiosk', 'manual')),
   checked_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
   UNIQUE (session_id, student_id)
 );
@@ -63,5 +66,39 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 `);
+
+// ---------- 기존 DB 마이그레이션 ----------
+const crypto = require('crypto');
+
+// classes.nfc_token 컬럼이 없던 DB에 추가하고 토큰 채우기
+const clsCols = db.prepare("PRAGMA table_info(classes)").all().map((c) => c.name);
+if (!clsCols.includes('nfc_token')) {
+  db.exec('ALTER TABLE classes ADD COLUMN nfc_token TEXT');
+}
+const fillToken = db.prepare('UPDATE classes SET nfc_token = ? WHERE id = ?');
+for (const row of db.prepare('SELECT id FROM classes WHERE nfc_token IS NULL').all()) {
+  fillToken.run(crypto.randomBytes(12).toString('hex'), row.id);
+}
+
+// attendance.method CHECK 제약에 tap/kiosk가 없던 DB는 테이블 재생성
+const attSql = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'attendance'").get();
+if (attSql && !attSql.sql.includes("'tap'")) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE attendance RENAME TO attendance_old;
+    CREATE TABLE attendance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('present', 'late', 'absent')),
+      method TEXT NOT NULL DEFAULT 'qr' CHECK (method IN ('qr', 'tap', 'kiosk', 'manual')),
+      checked_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+      UNIQUE (session_id, student_id)
+    );
+    INSERT INTO attendance SELECT * FROM attendance_old;
+    DROP TABLE attendance_old;
+    COMMIT;
+  `);
+}
 
 module.exports = db;

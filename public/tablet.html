@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>터치 출석</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .tablet { max-width: 1000px; margin: 0 auto; padding: 24px 16px; text-align: center; }
+  .tablet h1 { font-size: 28px; margin-bottom: 4px; }
+  .name-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px; margin-top: 20px;
+  }
+  .name-btn {
+    padding: 26px 8px; font-size: 22px; font-weight: 700;
+    background: var(--card); color: var(--text);
+    border: 2px solid var(--line); border-radius: 14px;
+  }
+  .name-btn:hover { background: #eef2fb; border-color: var(--primary); color: var(--primary); }
+  .name-btn.done { background: var(--green-bg); border-color: var(--green); color: var(--green); pointer-events: none; }
+  .name-btn.done small { display: block; font-size: 13px; font-weight: 400; }
+  #toast {
+    position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);
+    background: var(--green); color: #fff; padding: 14px 28px; border-radius: 999px;
+    font-size: 20px; font-weight: 700; display: none; z-index: 50;
+  }
+</style>
+</head>
+<body>
+<div class="tablet">
+  <h1 id="title">터치 출석</h1>
+  <p class="muted" style="font-size:17px;">등원하면 본인 이름을 터치하세요</p>
+  <p class="error" id="err" style="display:none;font-size:17px;"></p>
+  <div class="name-grid" id="grid"></div>
+</div>
+<div id="toast"></div>
+
+<script src="/js/common.js"></script>
+<script>
+const sessionId = new URLSearchParams(location.search).get('id');
+let busy = false;
+
+async function load() {
+  const ss = await api(`/api/admin/sessions/${sessionId}`);
+  document.getElementById('title').textContent = `${ss.class_name} 터치 출석`;
+  if (ss.ended_at) {
+    document.getElementById('grid').innerHTML = '';
+    const err = document.getElementById('err');
+    err.textContent = '수업이 종료되었습니다.';
+    err.style.display = 'block';
+    return;
+  }
+  document.getElementById('grid').innerHTML = ss.roster.map(r => r.status
+    ? `<button class="name-btn done">${esc(r.name)}<small>${STATUS_LABEL[r.status]} ${r.checked_at ? r.checked_at.slice(11, 16) : ''}</small></button>`
+    : `<button class="name-btn" onclick="checkin(${r.id}, '${esc(r.name)}')">${esc(r.name)}</button>`
+  ).join('');
+}
+
+async function checkin(studentId, name) {
+  if (busy || !confirm(`${name} 학생 본인이 맞나요?`)) return;
+  busy = true;
+  try {
+    const d = await api(`/api/admin/sessions/${sessionId}/kiosk-checkin`, {
+      method: 'POST', body: { student_id: studentId },
+    });
+    const toast = document.getElementById('toast');
+    toast.textContent = `${d.student_name}님 ${d.status === 'late' ? '지각 체크' : '출석 완료'}! ✅`;
+    toast.style.display = 'block';
+    setTimeout(() => { toast.style.display = 'none'; }, 2500);
+    load();
+  } catch (e) {
+    if (e.message !== 'unauthorized') alert(e.message);
+  } finally { busy = false; }
+}
+
+load().catch(() => {});
+setInterval(() => load().catch(() => {}), 5000);
+</script>
+</body>
+</html>

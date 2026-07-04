@@ -22,10 +22,14 @@
 
   <div class="card" id="live-controls">
     <div class="row">
-      <a id="kiosk-link" href="#" target="_blank" style="flex:1;"><button class="big">📺 QR 화면 열기 (교실 앞에 띄워두세요)</button></a>
+      <a id="kiosk-link" href="#" target="_blank" style="flex:1;"><button class="big">📺 QR 화면 열기</button></a>
+      <a id="tablet-link" href="#" target="_blank" style="flex:1;"><button class="big" style="background:var(--green);">👆 터치 출석 화면 (태블릿)</button></a>
       <button class="ghost" id="end-session" style="padding:16px;">수업 종료</button>
     </div>
-    <p class="muted" style="margin-top:8px;">수업 종료를 누르면 미체크 학생은 결석으로 기록되고 학부모 알림이 대기열에 등록됩니다.</p>
+    <p class="muted" style="margin-top:8px;">
+      QR 화면은 교실 앞에, 터치 출석 화면은 입구 태블릿에 띄워두세요. 둘 다 함께 사용할 수 있습니다.
+      NFC 태그를 붙여둔 경우 학생이 폰을 태그에 대기만 해도 출석됩니다 (반 관리 → NFC/인쇄 QR).
+      수업 종료를 누르면 미체크 학생은 결석으로 기록되고 학부모 알림이 대기열에 등록됩니다.</p>
   </div>
 
   <div class="card">
@@ -41,6 +45,7 @@
 <script>
 const sessionId = new URLSearchParams(location.search).get('id');
 document.getElementById('kiosk-link').href = `/kiosk.html?id=${sessionId}`;
+document.getElementById('tablet-link').href = `/tablet.html?id=${sessionId}`;
 let ended = false;
 
 async function load() {
@@ -60,7 +65,7 @@ async function load() {
   document.getElementById('roster-rows').innerHTML = ss.roster.map(r => `
     <tr>
       <td><strong>${esc(r.name)}</strong></td>
-      <td>${statusBadge(r.status)}${r.method === 'manual' && r.status ? ' <span class="muted">(수동)</span>' : ''}</td>
+      <td>${statusBadge(r.status)}${r.status && r.method !== 'qr' ? ` <span class="muted">(${METHOD_LABEL[r.method] || r.method})</span>` : ''}</td>
       <td class="muted">${r.checked_at ? esc(r.checked_at.slice(11, 19)) : '-'}</td>
       <td>
         <select onchange="mark(${r.id}, this.value); this.value='';">
