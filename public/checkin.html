@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>출석체크</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="checkin">
+  <div class="panel" id="panel">
+    <div class="result-icon">⏳</div>
+    <h1>출석 처리 중...</h1>
+  </div>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const session_id = params.get('s');
+const qr_token = params.get('t');
+const panel = document.getElementById('panel');
+
+function showError(msg) {
+  panel.innerHTML = `
+    <div class="result-icon">⚠️</div>
+    <h1>출석 실패</h1>
+    <p class="muted" style="font-size:16px;">${esc(msg)}</p>`;
+}
+
+function showChecked(data) {
+  const isLate = data.status === 'late';
+  const time = (data.checked_at || '').slice(11, 16);
+  panel.innerHTML = `
+    <div class="result-icon">${isLate ? '🕐' : '✅'}</div>
+    <h1>${esc(data.student_name)}님 ${isLate ? '지각 체크' : '출석 완료'}!</h1>
+    <p class="muted" style="font-size:16px;">${esc(data.class_name)} · ${time}</p>
+    ${data.duplicate ? '<p class="muted">이미 출석 처리된 수업입니다.</p>' : ''}
+    <p class="muted" style="margin-top:16px;">이 화면을 닫으셔도 됩니다. 다음부터는 스캔만 하면 자동 출석됩니다.</p>`;
+}
+
+function showRegister(data) {
+  if (!data.roster.length) {
+    showError('선택 가능한 학생이 없습니다. 이미 모두 출석했거나 기기가 등록된 학생입니다. 선생님께 문의하세요.');
+    return;
+  }
+  panel.innerHTML = `
+    <div class="result-icon">👋</div>
+    <h1>처음 오셨네요!</h1>
+    <p class="muted" style="font-size:16px;">${esc(data.class_name)}</p>
+    <p style="margin:12px 0 4px;">본인 이름을 선택하세요. <strong>딱 한 번만</strong> 선택하면<br>다음부터는 스캔만으로 자동 출석됩니다.</p>
+    <div id="roster"></div>
+    <p class="muted" style="margin-top:14px;font-size:13px;">
+      이름을 선택하면 출석 확인 목적으로 이 기기가 본인 명의로 등록되고,<br>
+      등원 시각이 기록되어 학부모님께 알림이 발송되는 것에 동의하게 됩니다.
+    </p>`;
+  const rosterEl = document.getElementById('roster');
+  for (const s of data.roster) {
+    const btn = document.createElement('button');
+    btn.className = 'roster-btn';
+    btn.textContent = s.name;
+    btn.onclick = async () => {
+      if (!confirm(`${s.name} 학생 본인이 맞나요?`)) return;
+      try {
+        const res = await fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id, qr_token, student_id: s.id }),
+        });
+        const d = await res.json();
+        if (!res.ok) return showError(d.error || '등록에 실패했습니다.');
+        showChecked(d);
+      } catch { showError('네트워크 오류가 발생했습니다. 다시 스캔해 주세요.'); }
+    };
+    rosterEl.appendChild(btn);
+  }
+}
+
+(async () => {
+  if (!session_id || !qr_token) return showError('잘못된 접근입니다. 교실의 QR코드를 스캔해 주세요.');
+  try {
+    const res = await fetch('/api/checkin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id, qr_token }),
+    });
+    const data = await res.json();
+    if (!res.ok) return showError(data.error || '출석 처리에 실패했습니다.');
+    if (data.mode === 'checked') showChecked(data);
+    else showRegister(data);
+  } catch { showError('네트워크 오류가 발생했습니다. 다시 스캔해 주세요.'); }
+})();
+</script>
+</body>
+</html>

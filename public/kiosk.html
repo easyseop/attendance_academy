@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>출석 QR</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="kiosk">
+  <h1 id="kiosk-title">출석 QR코드</h1>
+  <p class="muted" style="font-size:18px;">휴대폰 카메라로 QR코드를 비추면 출석됩니다</p>
+  <img id="qr-img" alt="출석 QR코드" style="display:none;">
+  <p class="timer" id="timer"></p>
+  <p class="error" id="kiosk-error" style="display:none;font-size:18px;"></p>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+const sessionId = new URLSearchParams(location.search).get('id');
+
+async function refresh() {
+  try {
+    const { dataUrl, expiresIn } = await api(`/api/admin/sessions/${sessionId}/qr`);
+    const img = document.getElementById('qr-img');
+    img.src = dataUrl;
+    img.style.display = '';
+    document.getElementById('kiosk-error').style.display = 'none';
+    document.getElementById('timer').textContent = `${expiresIn}초 후 코드가 갱신됩니다`;
+    setTimeout(refresh, expiresIn * 1000 + 300);
+  } catch (e) {
+    if (e.message === 'unauthorized') return;
+    document.getElementById('qr-img').style.display = 'none';
+    const err = document.getElementById('kiosk-error');
+    err.textContent = e.message;
+    err.style.display = 'block';
+    setTimeout(refresh, 5000);
+  }
+}
+
+// 남은 시간 표시용 카운트다운
+setInterval(() => {
+  const t = document.getElementById('timer');
+  const m = t.textContent.match(/^(\d+)초/);
+  if (m && Number(m[1]) > 0) t.textContent = `${m[1] - 1}초 후 코드가 갱신됩니다`;
+}, 1000);
+
+refresh();
+</script>
+</body>
+</html>

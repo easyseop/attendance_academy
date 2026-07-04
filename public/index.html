@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>학원 출석체크 - 반 목록</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="container">
+  <header class="topbar">
+    <h1>📋 학원 출석체크</h1>
+    <a href="/notifications.html">알림 내역</a>
+  </header>
+
+  <div class="card">
+    <h2>새 반(커리큘럼) 만들기</h2>
+    <div class="row">
+      <input id="cls-name" placeholder="반 이름 (예: 중2 수학 A반)" style="flex:2;min-width:180px;">
+      <input id="cls-schedule" placeholder="시간표 메모 (예: 월수금 16:00)" style="flex:2;min-width:160px;">
+      <input id="cls-late" type="number" value="10" min="0" title="지각 기준(분)" style="width:80px;">
+      <button id="cls-add">추가</button>
+    </div>
+    <p class="muted" style="margin-top:6px;">숫자는 지각 기준(분) — 수업 시작 후 이 시간이 지나 스캔하면 지각으로 기록됩니다.</p>
+    <p class="error" id="cls-error" style="display:none;"></p>
+  </div>
+
+  <div class="card">
+    <h2>반 목록</h2>
+    <div id="class-list"><p class="muted">불러오는 중...</p></div>
+  </div>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+async function load() {
+  const classes = await api('/api/admin/classes');
+  const el = document.getElementById('class-list');
+  if (!classes.length) {
+    el.innerHTML = '<p class="muted">아직 반이 없습니다. 위에서 첫 반을 만들어 보세요.</p>';
+    return;
+  }
+  el.innerHTML = classes.map(c => `
+    <div class="list-item">
+      <div>
+        <a class="title" href="/class.html?id=${c.id}">${esc(c.name)}</a>
+        <div class="muted">${esc(c.schedule_text) || '시간표 미입력'} · 학생 ${c.student_count}명</div>
+      </div>
+      <div class="row">
+        ${c.active_session_id
+          ? `<a href="/session.html?id=${c.active_session_id}"><button>🟢 수업 진행 중</button></a>`
+          : `<button onclick="startSession(${c.id})">수업 시작</button>`}
+      </div>
+    </div>`).join('');
+}
+
+async function startSession(classId) {
+  const { id } = await api(`/api/admin/classes/${classId}/sessions`, { method: 'POST' });
+  location.href = `/session.html?id=${id}`;
+}
+
+document.getElementById('cls-add').onclick = async () => {
+  const errEl = document.getElementById('cls-error');
+  errEl.style.display = 'none';
+  try {
+    await api('/api/admin/classes', { method: 'POST', body: {
+      name: document.getElementById('cls-name').value,
+      schedule_text: document.getElementById('cls-schedule').value,
+      late_after_min: document.getElementById('cls-late').value,
+    }});
+    document.getElementById('cls-name').value = '';
+    document.getElementById('cls-schedule').value = '';
+    load();
+  } catch (e) {
+    if (e.message !== 'unauthorized') { errEl.textContent = e.message; errEl.style.display = 'block'; }
+  }
+};
+
+load().catch(() => {});
+</script>
+</body>
+</html>

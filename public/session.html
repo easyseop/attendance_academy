@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>수업 출석 현황</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="container">
+  <header class="topbar">
+    <h1 id="title">출석 현황</h1>
+    <a href="/">← 반 목록</a>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="num" id="n-present" style="color:var(--green);">0</div><div class="label">출석</div></div>
+    <div class="stat"><div class="num" id="n-late" style="color:var(--amber);">0</div><div class="label">지각</div></div>
+    <div class="stat"><div class="num" id="n-absent" style="color:var(--red);">0</div><div class="label">결석</div></div>
+    <div class="stat"><div class="num" id="n-unchecked" style="color:var(--muted);">0</div><div class="label">미체크</div></div>
+  </div>
+
+  <div class="card" id="live-controls">
+    <div class="row">
+      <a id="kiosk-link" href="#" target="_blank" style="flex:1;"><button class="big">📺 QR 화면 열기 (교실 앞에 띄워두세요)</button></a>
+      <button class="ghost" id="end-session" style="padding:16px;">수업 종료</button>
+    </div>
+    <p class="muted" style="margin-top:8px;">수업 종료를 누르면 미체크 학생은 결석으로 기록되고 학부모 알림이 대기열에 등록됩니다.</p>
+  </div>
+
+  <div class="card">
+    <h2>학생별 현황 <span class="muted" style="font-weight:400;">(자동 새로고침)</span></h2>
+    <table>
+      <thead><tr><th>이름</th><th>상태</th><th>체크 시각</th><th>수동 정정</th></tr></thead>
+      <tbody id="roster-rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+const sessionId = new URLSearchParams(location.search).get('id');
+document.getElementById('kiosk-link').href = `/kiosk.html?id=${sessionId}`;
+let ended = false;
+
+async function load() {
+  const ss = await api(`/api/admin/sessions/${sessionId}`);
+  ended = !!ss.ended_at;
+  document.getElementById('title').textContent =
+    `${ss.class_name} — ${ss.started_at.slice(0, 16)}${ended ? ' (종료됨)' : ''}`;
+  document.getElementById('live-controls').style.display = ended ? 'none' : '';
+
+  const count = { present: 0, late: 0, absent: 0, unchecked: 0 };
+  for (const r of ss.roster) count[r.status || 'unchecked']++;
+  document.getElementById('n-present').textContent = count.present;
+  document.getElementById('n-late').textContent = count.late;
+  document.getElementById('n-absent').textContent = count.absent;
+  document.getElementById('n-unchecked').textContent = count.unchecked;
+
+  document.getElementById('roster-rows').innerHTML = ss.roster.map(r => `
+    <tr>
+      <td><strong>${esc(r.name)}</strong></td>
+      <td>${statusBadge(r.status)}${r.method === 'manual' && r.status ? ' <span class="muted">(수동)</span>' : ''}</td>
+      <td class="muted">${r.checked_at ? esc(r.checked_at.slice(11, 19)) : '-'}</td>
+      <td>
+        <select onchange="mark(${r.id}, this.value); this.value='';">
+          <option value="">변경...</option>
+          <option value="present">출석</option>
+          <option value="late">지각</option>
+          <option value="absent">결석</option>
+        </select>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">이 반에 학생이 없습니다.</td></tr>';
+}
+
+async function mark(studentId, status) {
+  if (!status) return;
+  await api(`/api/admin/sessions/${sessionId}/mark`, { method: 'POST', body: { student_id: studentId, status } });
+  load();
+}
+
+document.getElementById('end-session').onclick = async () => {
+  if (!confirm('수업을 종료할까요? 미체크 학생은 결석 처리됩니다.')) return;
+  await api(`/api/admin/sessions/${sessionId}/end`, { method: 'POST' });
+  load();
+};
+
+load().catch(() => {});
+setInterval(() => { if (!ended) load().catch(() => {}); }, 3000);
+</script>
+</body>
+</html>

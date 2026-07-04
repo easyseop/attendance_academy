@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>반 관리</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="container">
+  <header class="topbar">
+    <h1 id="cls-title">반 관리</h1>
+    <a href="/">← 반 목록</a>
+  </header>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;">
+      <div>
+        <h2 id="cls-name" style="margin-bottom:2px;"></h2>
+        <p class="muted" id="cls-meta"></p>
+      </div>
+      <div class="row">
+        <button id="start-session">수업 시작</button>
+        <button class="ghost" id="delete-class">반 삭제</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>학생 명단</h2>
+    <div class="row" style="margin-bottom:12px;">
+      <input id="st-name" placeholder="학생 이름" style="flex:1;min-width:120px;">
+      <input id="st-phone" placeholder="학부모 연락처 (알림용, 선택)" style="flex:1;min-width:160px;">
+      <button id="st-add">학생 추가</button>
+    </div>
+    <p class="error" id="st-error" style="display:none;"></p>
+    <table>
+      <thead><tr><th>이름</th><th>학부모 연락처</th><th>기기 등록</th><th></th></tr></thead>
+      <tbody id="student-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>지난 수업 기록</h2>
+    <table>
+      <thead><tr><th>수업 시작</th><th>종료</th><th>출석 인원</th><th></th></tr></thead>
+      <tbody id="session-rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+const classId = new URLSearchParams(location.search).get('id');
+
+async function load() {
+  const c = await api(`/api/admin/classes/${classId}`);
+  document.title = `${c.name} - 반 관리`;
+  document.getElementById('cls-name').textContent = c.name;
+  document.getElementById('cls-meta').textContent =
+    `${c.schedule_text || '시간표 미입력'} · 지각 기준 ${c.late_after_min}분 · 학생 ${c.students.length}명`;
+
+  document.getElementById('student-rows').innerHTML = c.students.map(s => `
+    <tr>
+      <td><strong>${esc(s.name)}</strong></td>
+      <td class="muted">${esc(s.parent_phone) || '-'}</td>
+      <td>${s.has_device
+        ? '✅ 등록됨 <button class="ghost" style="padding:4px 8px;font-size:12px;" onclick="resetDevice(' + s.id + ')">재등록 허용</button>'
+        : '<span class="muted">첫 스캔 시 등록</span>'}</td>
+      <td style="text-align:right;"><button class="ghost" onclick="removeStudent(${s.id}, '${esc(s.name)}')">삭제</button></td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">학생을 추가해 주세요.</td></tr>';
+
+  document.getElementById('session-rows').innerHTML = c.sessions.map(ss => `
+    <tr>
+      <td>${esc(ss.started_at)}</td>
+      <td>${ss.ended_at ? esc(ss.ended_at) : '<span class="badge present">진행 중</span>'}</td>
+      <td>${ss.attended}명</td>
+      <td style="text-align:right;"><a href="/session.html?id=${ss.id}"><button class="ghost" style="color:var(--primary);border-color:var(--primary);">보기</button></a></td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">아직 수업 기록이 없습니다.</td></tr>';
+}
+
+document.getElementById('st-add').onclick = async () => {
+  const errEl = document.getElementById('st-error');
+  errEl.style.display = 'none';
+  try {
+    await api(`/api/admin/classes/${classId}/students`, { method: 'POST', body: {
+      name: document.getElementById('st-name').value,
+      parent_phone: document.getElementById('st-phone').value,
+    }});
+    document.getElementById('st-name').value = '';
+    document.getElementById('st-phone').value = '';
+    load();
+  } catch (e) {
+    if (e.message !== 'unauthorized') { errEl.textContent = e.message; errEl.style.display = 'block'; }
+  }
+};
+
+async function removeStudent(id, name) {
+  if (!confirm(`${name} 학생을 삭제할까요? 출석 기록도 함께 삭제됩니다.`)) return;
+  await api(`/api/admin/students/${id}`, { method: 'DELETE' });
+  load();
+}
+
+async function resetDevice(id) {
+  if (!confirm('기존 기기 등록을 해제할까요? 학생이 다음 스캔 때 다시 이름을 선택하게 됩니다.')) return;
+  await api(`/api/admin/students/${id}/reset-device`, { method: 'POST' });
+  load();
+}
+
+document.getElementById('start-session').onclick = async () => {
+  const { id } = await api(`/api/admin/classes/${classId}/sessions`, { method: 'POST' });
+  location.href = `/session.html?id=${id}`;
+};
+
+document.getElementById('delete-class').onclick = async () => {
+  if (!confirm('이 반과 모든 학생·출석 기록을 삭제할까요?')) return;
+  await api(`/api/admin/classes/${classId}`, { method: 'DELETE' });
+  location.href = '/';
+};
+
+load().catch(() => {});
+</script>
+</body>
+</html>
