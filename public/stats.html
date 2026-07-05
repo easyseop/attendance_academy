@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>출석 통계</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .day-nav { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .day-nav input[type=date] { font-size: 16px; }
+  .session-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+  .pill-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
+  .names { font-size: 15px; margin: 2px 0 8px; }
+  .names .label { display: inline-block; min-width: 52px; font-weight: 700; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header class="topbar">
+    <h1>📊 출석 통계</h1>
+    <a href="/">← 반 목록</a>
+  </header>
+
+  <div class="day-nav">
+    <button class="ghost" id="prev-day">◀ 전날</button>
+    <input type="date" id="date-input">
+    <button class="ghost" id="next-day">다음날 ▶</button>
+    <button id="today-btn">오늘</button>
+  </div>
+
+  <div class="stats" id="day-summary" style="display:none;">
+    <div class="stat"><div class="num" id="d-present" style="color:var(--green);">0</div><div class="label">출석</div></div>
+    <div class="stat"><div class="num" id="d-late" style="color:var(--amber);">0</div><div class="label">지각</div></div>
+    <div class="stat"><div class="num" id="d-absent" style="color:var(--red);">0</div><div class="label">결석</div></div>
+    <div class="stat"><div class="num" id="d-sessions">0</div><div class="label">수업 수</div></div>
+  </div>
+
+  <div id="session-cards"><p class="muted">불러오는 중...</p></div>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+const dateInput = document.getElementById('date-input');
+
+function fmtName(r) {
+  const time = r.checked_at ? ` ${r.checked_at.slice(11, 16)}` : '';
+  return `${esc(r.name)}${time ? `<span class="muted">${time}</span>` : ''}`;
+}
+
+async function load(date) {
+  const data = await api(`/api/admin/stats${date ? `?date=${date}` : ''}`);
+  dateInput.value = data.date;
+
+  const total = { present: 0, late: 0, absent: 0 };
+  const cards = document.getElementById('session-cards');
+
+  if (!data.sessions.length) {
+    document.getElementById('day-summary').style.display = 'none';
+    cards.innerHTML = `<div class="card"><p class="muted">${esc(data.date)}에는 수업 기록이 없습니다.</p></div>`;
+    return;
+  }
+
+  cards.innerHTML = data.sessions.map(ss => {
+    const g = { present: [], late: [], absent: [], unchecked: [] };
+    for (const r of ss.roster) g[r.status || 'unchecked'].push(r);
+    total.present += g.present.length;
+    total.late += g.late.length;
+    total.absent += g.absent.length;
+    return `
+    <div class="card">
+      <div class="session-head">
+        <h2 style="margin:0;">${esc(ss.class_name)}</h2>
+        <span class="muted">${esc(ss.started_at.slice(11, 16))} 시작
+          ${ss.ended_at ? `· ${esc(ss.ended_at.slice(11, 16))} 종료` : '· <strong style="color:var(--green);">진행 중</strong>'}
+          · <a href="/session.html?id=${ss.id}">상세</a></span>
+      </div>
+      <div class="pill-row">
+        <span class="badge present">출석 ${g.present.length}</span>
+        <span class="badge late">지각 ${g.late.length}</span>
+        <span class="badge absent">결석 ${g.absent.length}</span>
+        ${g.unchecked.length ? `<span class="badge none">미체크 ${g.unchecked.length}</span>` : ''}
+      </div>
+      ${g.present.length ? `<p class="names"><span class="label" style="color:var(--green);">출석</span> ${g.present.map(fmtName).join(', ')}</p>` : ''}
+      ${g.late.length ? `<p class="names"><span class="label" style="color:var(--amber);">지각</span> ${g.late.map(fmtName).join(', ')}</p>` : ''}
+      ${g.absent.length ? `<p class="names"><span class="label" style="color:var(--red);">결석</span> ${g.absent.map(r => esc(r.name)).join(', ')}</p>` : ''}
+      ${g.unchecked.length ? `<p class="names"><span class="label" style="color:var(--muted);">미체크</span> ${g.unchecked.map(r => esc(r.name)).join(', ')}</p>` : ''}
+    </div>`;
+  }).join('');
+
+  document.getElementById('day-summary').style.display = '';
+  document.getElementById('d-present').textContent = total.present;
+  document.getElementById('d-late').textContent = total.late;
+  document.getElementById('d-absent').textContent = total.absent;
+  document.getElementById('d-sessions').textContent = data.sessions.length;
+}
+
+function shiftDay(delta) {
+  const d = new Date(dateInput.value + 'T12:00:00');
+  d.setDate(d.getDate() + delta);
+  load(d.toISOString().slice(0, 10));
+}
+
+document.getElementById('prev-day').onclick = () => shiftDay(-1);
+document.getElementById('next-day').onclick = () => shiftDay(1);
+document.getElementById('today-btn').onclick = () => load();
+dateInput.onchange = () => load(dateInput.value);
+
+load().catch(() => {});
+</script>
+</body>
+</html>

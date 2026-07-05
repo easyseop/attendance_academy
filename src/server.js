@@ -226,12 +226,29 @@ app.get('/api/admin/notifications', requireTeacher, (req, res) => {
   res.json(rows);
 });
 
+function getAcademyToken() {
+  return db.prepare("SELECT value FROM settings WHERE key = 'academy_token'").get().value;
+}
+
+const ACTIVE_SESSION_SQL = `
+  SELECT ss.*, c.name AS class_name, c.late_after_min FROM sessions ss
+  JOIN classes c ON c.id = ss.class_id`;
+
 // ---------- 학생 체크인 (공개, PIN 불필요) ----------
-// 두 가지 진입 경로:
+// 세 가지 진입 경로:
 //  - 회전 QR: session_id + qr_token (30초 회전, method 'qr')
-//  - NFC 태그/인쇄 QR: class_token (반별 고정, method 'tap') → 진행 중인 세션 자동 선택
+//  - 반별 NFC 태그/인쇄 QR: class_token (고정, method 'tap') → 진행 중인 세션 자동 선택
+//  - 학원 공용 태그: academy_token (고정, method 'tap') → 진행 중인 수업 중에서 선택
 function resolveCheckinTarget(body) {
-  const { session_id, qr_token, class_token } = body || {};
+  const { session_id, qr_token, class_token, academy_token } = body || {};
+  if (academy_token) {
+    if (String(academy_token) !== getAcademyToken()) {
+      return { error: '등록되지 않은 태그입니다. 선생님께 문의하세요.' };
+    }
+    const ss = db.prepare(`${ACTIVE_SESSION_SQL} WHERE ss.id = ? AND ss.ended_at IS NULL`).get(session_id);
+    if (!ss) return { error: '진행 중인 수업이 아닙니다. 다시 태그해 주세요.' };
+    return { ss, method: 'tap' };
+  }
   if (class_token) {
     const cls = db.prepare('SELECT id FROM classes WHERE nfc_token = ?').get(String(class_token));
     if (!cls) return { error: '등록되지 않은 태그입니다. 선생님께 문의하세요.' };
@@ -268,23 +285,52 @@ function recordAttendance(ss, student, method = 'qr') {
   return { status, checked_at: row.checked_at, duplicate: false };
 }
 
-// 스캔/태그 직후 호출: 등록된 기기면 자동 출석, 아니면 명단 반환
+// 기기 쿠키(반별 분리 저장)로 등록된 학생 찾기 — 한 학생이 여러 반에 다녀도 충돌하지 않음
+function findStudentByDevice(req, ss) {
+  const deviceToken = parseCookies(req)[`dt_${ss.class_id}`];
+  if (!deviceToken) return null;
+  return db.prepare(`
+    SELECT s.* FROM devices d JOIN students s ON s.id = d.student_id
+    WHERE d.token = ? AND s.class_id = ?
+  `).get(deviceToken, ss.class_id) || null;
+}
+
+// 스캔/태그 직후 호출: 등록된 기기면 자동 출석, 아니면 수업 선택/명단 반환
 app.post('/api/checkin', (req, res) => {
-  const { ss, method, error } = resolveCheckinTarget(req.body);
+  const body = req.body || {};
+
+  // 학원 공용 태그로 진입, 아직 수업 미선택: 진행 중인 수업 목록 제시 (등록 기기는 자동 매칭)
+  if (body.academy_token && !body.session_id) {
+    if (String(body.academy_token) !== getAcademyToken()) {
+      return res.status(400).json({ error: '등록되지 않은 태그입니다. 선생님께 문의하세요.' });
+    }
+    const active = db.prepare(`${ACTIVE_SESSION_SQL} WHERE ss.ended_at IS NULL ORDER BY ss.started_at DESC`).all();
+    if (!active.length) {
+      return res.status(400).json({ error: '지금은 진행 중인 수업이 없습니다. 수업 시간에 다시 태그해 주세요.' });
+    }
+    for (const ss of active) {
+      const student = findStudentByDevice(req, ss);
+      if (student) {
+        const result = recordAttendance(ss, student, 'tap');
+        return res.json({ mode: 'checked', class_name: ss.class_name, student_name: student.name, ...result });
+      }
+    }
+    if (active.length > 1) {
+      return res.json({
+        mode: 'select_class',
+        sessions: active.map((s) => ({ session_id: s.id, class_name: s.class_name, started_at: s.started_at })),
+      });
+    }
+    body.session_id = active[0].id; // 수업이 하나뿐이면 바로 그 수업으로 진행
+  }
+
+  const { ss, method, error } = resolveCheckinTarget(body);
   if (error) return res.status(400).json({ error });
 
-  // 기기 쿠키는 반별로 분리 저장 — 한 학생이 여러 반에 다녀도 충돌하지 않음
-  const cookies = parseCookies(req);
-  const deviceToken = cookies[`dt_${ss.class_id}`];
-  if (deviceToken) {
-    const student = db.prepare(`
-      SELECT s.* FROM devices d JOIN students s ON s.id = d.student_id
-      WHERE d.token = ? AND s.class_id = ?
-    `).get(deviceToken, ss.class_id);
-    if (student) {
-      const result = recordAttendance(ss, student, method);
-      return res.json({ mode: 'checked', class_name: ss.class_name, student_name: student.name, ...result });
-    }
+  const student = findStudentByDevice(req, ss);
+  if (student) {
+    const result = recordAttendance(ss, student, method);
+    return res.json({ mode: 'checked', class_name: ss.class_name, student_name: student.name, ...result });
   }
 
   // 미등록 기기: 아직 이 수업에 출석 안 한 학생 명단을 보여줌 (최초 1회 등록용)
@@ -295,7 +341,7 @@ app.post('/api/checkin', (req, res) => {
       AND s.id NOT IN (SELECT student_id FROM devices)
     ORDER BY s.name
   `).all(ss.class_id, ss.id);
-  res.json({ mode: 'register', class_name: ss.class_name, roster });
+  res.json({ mode: 'register', class_name: ss.class_name, session_id: ss.id, roster });
 });
 
 // 최초 1회 기기 등록(동의) + 출석 처리
@@ -315,6 +361,67 @@ app.post('/api/register', (req, res) => {
   res.setHeader('Set-Cookie',
     `dt_${ss.class_id}=${token}; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax; HttpOnly`);
   res.json({ mode: 'checked', class_name: ss.class_name, student_name: student.name, ...result });
+});
+
+// 명단에 없는 학생이 본인 정보를 직접 입력해 등록 + 출석 (최초 1회)
+app.post('/api/self-register', (req, res) => {
+  const { name, parent_phone = '' } = req.body || {};
+  const { ss, method, error } = resolveCheckinTarget(req.body);
+  if (error) return res.status(400).json({ error });
+  const trimmed = (name || '').trim();
+  if (!trimmed) return res.status(400).json({ error: '이름을 입력해 주세요.' });
+  if (trimmed.length > 20) return res.status(400).json({ error: '이름이 너무 깁니다.' });
+  const dup = db.prepare('SELECT 1 FROM students WHERE class_id = ? AND name = ?').get(ss.class_id, trimmed);
+  if (dup) {
+    return res.status(400).json({ error: '이미 명단에 있는 이름입니다. 목록에서 본인 이름을 선택하거나 선생님께 문의하세요.' });
+  }
+
+  const token = crypto.randomBytes(24).toString('hex');
+  const tx = db.transaction(() => {
+    const info = db.prepare('INSERT INTO students (class_id, name, parent_phone) VALUES (?, ?, ?)')
+      .run(ss.class_id, trimmed, String(parent_phone).trim());
+    db.prepare('INSERT INTO devices (student_id, token) VALUES (?, ?)').run(info.lastInsertRowid, token);
+    return db.prepare('SELECT * FROM students WHERE id = ?').get(info.lastInsertRowid);
+  });
+  const student = tx();
+  const result = recordAttendance(ss, student, method);
+  res.setHeader('Set-Cookie',
+    `dt_${ss.class_id}=${token}; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax; HttpOnly`);
+  res.json({ mode: 'checked', class_name: ss.class_name, student_name: student.name, self_registered: true, ...result });
+});
+
+// 학원 공용 태그 URL (+ 인쇄용 QR) — 모든 반 공통, 태그 시 진행 중인 수업 선택
+app.get('/api/admin/academy-tap-info', requireTeacher, async (req, res) => {
+  const base = `${req.protocol}://${req.get('host')}`;
+  const url = `${base}/checkin.html?a=${getAcademyToken()}`;
+  const dataUrl = await QRCode.toDataURL(url, { width: 480, margin: 1 });
+  res.json({ url, dataUrl });
+});
+
+// 일별 통계: 그날의 수업별 출석자/지각/결석자 명단
+app.get('/api/admin/stats', requireTeacher, (req, res) => {
+  const q = String(req.query.date || '');
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(q)
+    ? q
+    : db.prepare("SELECT date('now', 'localtime') AS d").get().d;
+  const sessions = db.prepare(`
+    ${ACTIVE_SESSION_SQL} WHERE date(ss.started_at) = ? ORDER BY ss.started_at
+  `).all(date);
+  const rosterStmt = db.prepare(`
+    SELECT s.id, s.name, a.status, a.method, a.checked_at
+    FROM students s
+    LEFT JOIN attendance a ON a.student_id = s.id AND a.session_id = ?
+    WHERE s.class_id = ? ORDER BY s.name
+  `);
+  const out = sessions.map((ss) => ({
+    id: ss.id,
+    class_id: ss.class_id,
+    class_name: ss.class_name,
+    started_at: ss.started_at,
+    ended_at: ss.ended_at,
+    roster: rosterStmt.all(ss.id, ss.class_id),
+  }));
+  res.json({ date, sessions: out });
 });
 
 // 태블릿 터치 출석: 입구 태블릿(선생님 기기)에서 학생이 자기 이름을 터치

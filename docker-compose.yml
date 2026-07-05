@@ -1,0 +1,12 @@
+services:
+  attendance:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # 선생님 로그인 PIN — 반드시 바꿔서 사용하세요
+      - TEACHER_PIN=${TEACHER_PIN:-0000}
+    volumes:
+      # 출석 데이터는 호스트의 ./data 폴더에 저장됩니다 (컨테이너를 지워도 유지)
+      - ./data:/app/data
+    restart: unless-stopped

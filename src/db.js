@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS attendance (
   UNIQUE (session_id, student_id)
 );
 
+-- 시스템 설정 (학원 공용 태그 토큰 등)
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- 학부모 알림 발송 대기열. 실제 발송(알림톡/SMS)은 외부 API 연동 지점.
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +85,10 @@ const fillToken = db.prepare('UPDATE classes SET nfc_token = ? WHERE id = ?');
 for (const row of db.prepare('SELECT id FROM classes WHERE nfc_token IS NULL').all()) {
   fillToken.run(crypto.randomBytes(12).toString('hex'), row.id);
 }
+
+// 학원 공용 태그 토큰 발급 (최초 1회)
+db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('academy_token', ?)")
+  .run(crypto.randomBytes(12).toString('hex'));
 
 // attendance.method CHECK 제약에 tap/kiosk가 없던 DB는 테이블 재생성
 const attSql = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'attendance'").get();

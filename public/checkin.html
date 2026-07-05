@@ -17,12 +17,24 @@
 <script src="/js/common.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
-// 회전 QR(s+t) 또는 NFC 태그/인쇄 QR(c) 두 경로 모두 지원
-const payload = params.get('c')
-  ? { class_token: params.get('c') }
-  : { session_id: params.get('s'), qr_token: params.get('t') };
-const valid = params.get('c') || (params.get('s') && params.get('t'));
+// 세 가지 진입 경로: 학원 공용 태그(a) / 반별 NFC·인쇄 QR(c) / 회전 QR(s+t)
+let payload;
+if (params.get('a')) payload = { academy_token: params.get('a') };
+else if (params.get('c')) payload = { class_token: params.get('c') };
+else payload = { session_id: params.get('s'), qr_token: params.get('t') };
+const valid = params.get('a') || params.get('c') || (params.get('s') && params.get('t'));
 const panel = document.getElementById('panel');
+
+async function post(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
 
 function showError(msg) {
   panel.innerHTML = `
@@ -39,24 +51,52 @@ function showChecked(data) {
     <h1>${esc(data.student_name)}님 ${isLate ? '지각 체크' : '출석 완료'}!</h1>
     <p class="muted" style="font-size:16px;">${esc(data.class_name)} · ${time}</p>
     ${data.duplicate ? '<p class="muted">이미 출석 처리된 수업입니다.</p>' : ''}
-    <p class="muted" style="margin-top:16px;">이 화면을 닫으셔도 됩니다. 다음부터는 스캔만 하면 자동 출석됩니다.</p>`;
+    ${data.self_registered ? '<p class="muted">명단 등록도 함께 완료되었습니다.</p>' : ''}
+    <p class="muted" style="margin-top:16px;">이 화면을 닫으셔도 됩니다. 다음부터는 태그/스캔만 하면 자동 출석됩니다.</p>`;
+}
+
+// 공용 태그: 진행 중인 수업이 여러 개면 수업 선택
+function showSelectClass(data) {
+  panel.innerHTML = `
+    <div class="result-icon">📚</div>
+    <h1>어떤 수업인가요?</h1>
+    <p class="muted" style="font-size:16px;">지금 듣는 수업을 선택하세요</p>
+    <div id="class-list"></div>`;
+  const listEl = document.getElementById('class-list');
+  for (const s of data.sessions) {
+    const btn = document.createElement('button');
+    btn.className = 'roster-btn';
+    btn.innerHTML = `${esc(s.class_name)}<br><small style="font-weight:400;color:var(--muted);">${esc(s.started_at.slice(11, 16))} 시작</small>`;
+    btn.onclick = () => {
+      payload.session_id = s.session_id;
+      checkin();
+    };
+    listEl.appendChild(btn);
+  }
 }
 
 function showRegister(data) {
-  if (!data.roster.length) {
-    showError('선택 가능한 학생이 없습니다. 이미 모두 출석했거나 기기가 등록된 학생입니다. 선생님께 문의하세요.');
-    return;
-  }
+  if (data.session_id) payload.session_id = data.session_id;
   panel.innerHTML = `
     <div class="result-icon">👋</div>
     <h1>처음 오셨네요!</h1>
     <p class="muted" style="font-size:16px;">${esc(data.class_name)}</p>
-    <p style="margin:12px 0 4px;">본인 이름을 선택하세요. <strong>딱 한 번만</strong> 선택하면<br>다음부터는 스캔만으로 자동 출석됩니다.</p>
+    ${data.roster.length ? '<p style="margin:12px 0 4px;">본인 이름을 선택하세요. <strong>딱 한 번만</strong> 선택하면<br>다음부터는 태그/스캔만으로 자동 출석됩니다.</p>' : ''}
     <div id="roster"></div>
+    <button class="roster-btn" id="self-reg-toggle" style="border-style:dashed;color:var(--muted);">
+      ✏️ 명단에 이름이 없어요 — 직접 입력하기
+    </button>
+    <div id="self-reg-form" style="display:none;margin-top:10px;">
+      <input id="sr-name" placeholder="이름" style="width:100%;margin-bottom:8px;font-size:17px;">
+      <input id="sr-phone" placeholder="학부모 연락처 (선택)" inputmode="tel" style="width:100%;margin-bottom:8px;font-size:17px;">
+      <button class="big" id="sr-submit">등록하고 출석하기</button>
+      <p class="error" id="sr-error" style="display:none;"></p>
+    </div>
     <p class="muted" style="margin-top:14px;font-size:13px;">
-      이름을 선택하면 출석 확인 목적으로 이 기기가 본인 명의로 등록되고,<br>
+      이름을 선택(입력)하면 출석 확인 목적으로 이 기기가 본인 명의로 등록되고,<br>
       등원 시각이 기록되어 학부모님께 알림이 발송되는 것에 동의하게 됩니다.
     </p>`;
+
   const rosterEl = document.getElementById('roster');
   for (const s of data.roster) {
     const btn = document.createElement('button');
@@ -64,35 +104,42 @@ function showRegister(data) {
     btn.textContent = s.name;
     btn.onclick = async () => {
       if (!confirm(`${s.name} 학생 본인이 맞나요?`)) return;
-      try {
-        const res = await fetch('/api/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, student_id: s.id }),
-        });
-        const d = await res.json();
-        if (!res.ok) return showError(d.error || '등록에 실패했습니다.');
-        showChecked(d);
-      } catch { showError('네트워크 오류가 발생했습니다. 다시 스캔해 주세요.'); }
+      try { showChecked(await post('/api/register', { ...payload, student_id: s.id })); }
+      catch (e) { showError(e.message); }
     };
     rosterEl.appendChild(btn);
   }
+
+  document.getElementById('self-reg-toggle').onclick = () => {
+    const form = document.getElementById('self-reg-form');
+    form.style.display = form.style.display === 'none' ? '' : 'none';
+    document.getElementById('sr-name').focus();
+  };
+  document.getElementById('sr-submit').onclick = async () => {
+    const errEl = document.getElementById('sr-error');
+    errEl.style.display = 'none';
+    const name = document.getElementById('sr-name').value.trim();
+    if (!name) { errEl.textContent = '이름을 입력해 주세요.'; errEl.style.display = 'block'; return; }
+    if (!confirm(`"${name}" 이름으로 등록하고 출석할까요?`)) return;
+    try {
+      showChecked(await post('/api/self-register', {
+        ...payload, name, parent_phone: document.getElementById('sr-phone').value,
+      }));
+    } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+  };
 }
 
-(async () => {
-  if (!valid) return showError('잘못된 접근입니다. 교실의 QR코드나 NFC 태그를 이용해 주세요.');
+async function checkin() {
   try {
-    const res = await fetch('/api/checkin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!res.ok) return showError(data.error || '출석 처리에 실패했습니다.');
+    const data = await post('/api/checkin', payload);
     if (data.mode === 'checked') showChecked(data);
+    else if (data.mode === 'select_class') showSelectClass(data);
     else showRegister(data);
-  } catch { showError('네트워크 오류가 발생했습니다. 다시 스캔해 주세요.'); }
-})();
+  } catch (e) { showError(e.message); }
+}
+
+if (!valid) showError('잘못된 접근입니다. 교실의 QR코드나 NFC 태그를 이용해 주세요.');
+else checkin();
 </script>
 </body>
 </html>
