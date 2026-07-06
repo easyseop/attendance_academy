@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS attendance (
   -- qr: 회전 QR 스캔 / tap: NFC 태그·고정 QR / kiosk: 태블릿 이름 터치 / manual: 선생님 수동
   method TEXT NOT NULL DEFAULT 'qr' CHECK (method IN ('qr', 'tap', 'kiosk', 'manual')),
   checked_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  -- 하원(체크아웃) 시각. 등원 후 다시 태그하면 기록됨. NULL이면 아직 하원 안 함.
+  left_at TEXT,
   UNIQUE (session_id, student_id)
 );
 
@@ -118,10 +120,17 @@ if (attSql && !attSql.sql.includes("'tap'")) {
       checked_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
       UNIQUE (session_id, student_id)
     );
-    INSERT INTO attendance SELECT * FROM attendance_old;
+    INSERT INTO attendance (id, session_id, student_id, status, method, checked_at)
+      SELECT id, session_id, student_id, status, method, checked_at FROM attendance_old;
     DROP TABLE attendance_old;
     COMMIT;
   `);
+}
+
+// attendance.left_at (하원 시각) 컬럼 추가
+const attCols = db.prepare("PRAGMA table_info(attendance)").all().map((c) => c.name);
+if (!attCols.includes('left_at')) {
+  db.exec('ALTER TABLE attendance ADD COLUMN left_at TEXT');
 }
 
 module.exports = db;

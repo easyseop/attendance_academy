@@ -213,7 +213,7 @@ app.get('/api/admin/sessions/:id', requireTeacher, (req, res) => {
   `).get(req.params.id);
   if (!ss) return res.status(404).json({ error: 'not found' });
   const roster = db.prepare(`
-    SELECT s.id, s.name, a.status, a.method, a.checked_at
+    SELECT s.id, s.name, a.status, a.method, a.checked_at, a.left_at
     FROM students s
     LEFT JOIN attendance a ON a.student_id = s.id AND a.session_id = ?
     WHERE s.class_id = ? ORDER BY s.name
@@ -342,18 +342,46 @@ function resolveCheckinTarget(body) {
   return { ss, method: 'qr' };
 }
 
+// 등원 직후 실수로 다시 태그하는 것을 하원으로 오인하지 않기 위한 최소 간격(분)
+const CHECKOUT_MIN_GAP_MIN = 3;
+
+// 태그/스캔 1회 처리. 첫 태그=등원, (일정 시간 후) 재태그=하원.
+// 반환 phase: 'in'(등원) | 'out'(하원), duplicate: 중복 태그 여부
 function recordAttendance(ss, student, method = 'qr') {
+  const now = Date.now();
   const already = db.prepare('SELECT * FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
-  if (already) return { status: already.status, checked_at: already.checked_at, duplicate: true };
-  const startedMs = new Date(ss.started_at.replace(' ', 'T')).getTime();
-  const late = Date.now() - startedMs > ss.late_after_min * 60 * 1000;
-  const status = late ? 'late' : 'present';
-  db.prepare('INSERT INTO attendance (session_id, student_id, status, method) VALUES (?, ?, ?, ?)')
-    .run(ss.id, student.id, status, method);
-  const row = db.prepare('SELECT checked_at FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
-  const label = late ? '지각' : '출석';
-  queueNotification(student, `[학원 알림] ${student.name} 학생이 ${row.checked_at.slice(11, 16)}에 등원했습니다. (${label})`);
-  return { status, checked_at: row.checked_at, duplicate: false };
+
+  if (!already) {
+    // 등원
+    const startedMs = new Date(ss.started_at.replace(' ', 'T')).getTime();
+    const late = now - startedMs > ss.late_after_min * 60 * 1000;
+    const status = late ? 'late' : 'present';
+    db.prepare('INSERT INTO attendance (session_id, student_id, status, method) VALUES (?, ?, ?, ?)')
+      .run(ss.id, student.id, status, method);
+    const row = db.prepare('SELECT checked_at FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
+    queueNotification(student,
+      `[학원 알림] ${student.name} 학생이 ${row.checked_at.slice(11, 16)}에 등원했습니다. (${late ? '지각' : '출석'})`);
+    return { phase: 'in', status, checked_at: row.checked_at, left_at: null, duplicate: false };
+  }
+
+  // 이미 하원했으면 그대로 안내
+  if (already.left_at) {
+    return { phase: 'out', status: already.status, checked_at: already.checked_at, left_at: already.left_at, duplicate: true };
+  }
+
+  // 등원 직후 짧은 시간 내 재태그는 중복(무시)
+  const checkedMs = new Date(already.checked_at.replace(' ', 'T')).getTime();
+  if (now - checkedMs < CHECKOUT_MIN_GAP_MIN * 60 * 1000) {
+    return { phase: 'in', status: already.status, checked_at: already.checked_at, left_at: null, duplicate: true };
+  }
+
+  // 하원 처리
+  db.prepare("UPDATE attendance SET left_at = datetime('now', 'localtime') WHERE session_id = ? AND student_id = ?")
+    .run(ss.id, student.id);
+  const row = db.prepare('SELECT checked_at, left_at FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
+  queueNotification(student,
+    `[학원 알림] ${student.name} 학생이 ${row.left_at.slice(11, 16)}에 하원했습니다.`);
+  return { phase: 'out', status: already.status, checked_at: row.checked_at, left_at: row.left_at, duplicate: false };
 }
 
 // 기기 쿠키(반별 분리 저장)로 등록된 학생 찾기 — 한 학생이 여러 반에 다녀도 충돌하지 않음
@@ -478,7 +506,7 @@ app.get('/api/admin/stats', requireTeacher, (req, res) => {
     ${ACTIVE_SESSION_SQL} WHERE date(ss.started_at) = ? ORDER BY ss.started_at
   `).all(date);
   const rosterStmt = db.prepare(`
-    SELECT s.id, s.name, a.status, a.method, a.checked_at
+    SELECT s.id, s.name, a.status, a.method, a.checked_at, a.left_at
     FROM students s
     LEFT JOIN attendance a ON a.student_id = s.id AND a.session_id = ?
     WHERE s.class_id = ? ORDER BY s.name
@@ -492,6 +520,35 @@ app.get('/api/admin/stats', requireTeacher, (req, res) => {
     roster: rosterStmt.all(ss.id, ss.class_id),
   }));
   res.json({ date, sessions: out });
+});
+
+// 월별 학생 개인별 출석률 리포트 (반별)
+app.get('/api/admin/classes/:id/report', requireTeacher, (req, res) => {
+  const cls = db.prepare('SELECT * FROM classes WHERE id = ?').get(req.params.id);
+  if (!cls) return res.status(404).json({ error: 'not found' });
+  const month = /^\d{4}-\d{2}$/.test(String(req.query.month || ''))
+    ? req.query.month
+    : db.prepare("SELECT strftime('%Y-%m', 'now', 'localtime') AS m").get().m;
+
+  const totalSessions = db.prepare(
+    "SELECT COUNT(*) AS n FROM sessions WHERE class_id = ? AND strftime('%Y-%m', started_at) = ?"
+  ).get(cls.id, month).n;
+
+  const students = db.prepare('SELECT id, name FROM students WHERE class_id = ? ORDER BY name').all(cls.id);
+  const countStmt = db.prepare(`
+    SELECT a.status, COUNT(*) AS n FROM attendance a
+    JOIN sessions ss ON ss.id = a.session_id
+    WHERE a.student_id = ? AND ss.class_id = ? AND strftime('%Y-%m', ss.started_at) = ?
+    GROUP BY a.status
+  `);
+  const rows = students.map((st) => {
+    const c = { present: 0, late: 0, absent: 0 };
+    for (const r of countStmt.all(st.id, cls.id, month)) c[r.status] = r.n;
+    const attended = c.present + c.late; // 출석+지각을 출석으로 집계
+    const rate = totalSessions ? Math.round((attended / totalSessions) * 100) : 0;
+    return { id: st.id, name: st.name, ...c, total: totalSessions, rate };
+  });
+  res.json({ month, class_name: cls.name, total_sessions: totalSessions, students: rows });
 });
 
 // 월별 출석부 CSV 내보내기 (반별). 엑셀에서 바로 열 수 있도록 UTF-8 BOM 포함.

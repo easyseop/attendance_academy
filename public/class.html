@@ -42,13 +42,18 @@
 
   <div class="card">
     <div class="session-head" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <h2 style="margin:0;">📁 월별 출석부 내보내기</h2>
+      <h2 style="margin:0;">📈 월별 출석률</h2>
       <div class="row">
         <input type="month" id="export-month">
-        <button id="export-btn">CSV 다운로드</button>
+        <button class="ghost" id="export-btn" style="color:var(--primary);border-color:var(--primary);">CSV 다운로드</button>
       </div>
     </div>
-    <p class="muted" style="margin-top:8px;">엑셀에서 바로 열 수 있는 출석부 파일(학생 × 날짜)을 내려받습니다.</p>
+    <p class="muted" id="report-summary" style="margin:8px 0;"></p>
+    <table>
+      <thead><tr><th>이름</th><th>출석</th><th>지각</th><th>결석</th><th>출석률</th></tr></thead>
+      <tbody id="report-rows"></tbody>
+    </table>
+    <p class="muted" style="margin-top:8px;font-size:13px;">출석률 = (출석+지각) ÷ 그 달의 수업 수. CSV는 날짜별 상세 출석부입니다.</p>
   </div>
 
   <div class="card">
@@ -195,9 +200,32 @@ document.getElementById('ed-save').onclick = async () => {
   load();
 };
 
-// ---- 월별 CSV 내보내기 ----
+// ---- 월별 출석률 리포트 + CSV ----
 const monthInput = document.getElementById('export-month');
 monthInput.value = new Date().toISOString().slice(0, 7);
+
+function rateColor(rate) {
+  if (rate >= 90) return 'var(--green)';
+  if (rate >= 70) return 'var(--amber)';
+  return 'var(--red)';
+}
+
+async function loadReport() {
+  const m = monthInput.value || new Date().toISOString().slice(0, 7);
+  const r = await api(`/api/admin/classes/${classId}/report?month=${m}`);
+  document.getElementById('report-summary').textContent =
+    `${r.month} · 총 ${r.total_sessions}회 수업 · 학생 ${r.students.length}명`;
+  document.getElementById('report-rows').innerHTML = r.students.map(s => `
+    <tr>
+      <td><strong>${esc(s.name)}</strong></td>
+      <td>${s.present}</td>
+      <td>${s.late}</td>
+      <td>${s.absent}</td>
+      <td><strong style="color:${rateColor(s.rate)};">${r.total_sessions ? s.rate + '%' : '-'}</strong></td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">학생이 없습니다.</td></tr>';
+}
+
+monthInput.onchange = () => loadReport().catch(() => {});
 document.getElementById('export-btn').onclick = () => {
   const m = monthInput.value || new Date().toISOString().slice(0, 7);
   location.href = `/api/admin/classes/${classId}/export?month=${m}`;
@@ -216,6 +244,7 @@ document.getElementById('delete-class').onclick = async () => {
 
 load().catch(() => {});
 loadTapInfo().catch(() => {});
+loadReport().catch(() => {});
 </script>
 </body>
 </html>

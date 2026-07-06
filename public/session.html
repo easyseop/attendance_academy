@@ -35,7 +35,7 @@
   <div class="card">
     <h2>학생별 현황 <span class="muted" style="font-weight:400;">(자동 새로고침)</span></h2>
     <table>
-      <thead><tr><th>이름</th><th>상태</th><th>체크 시각</th><th>수동 정정</th></tr></thead>
+      <thead><tr><th>이름</th><th>상태</th><th>등원</th><th>하원</th><th>수동 정정</th></tr></thead>
       <tbody id="roster-rows"></tbody>
     </table>
   </div>
@@ -66,7 +66,8 @@ async function load() {
     <tr>
       <td><strong>${esc(r.name)}</strong></td>
       <td>${statusBadge(r.status)}${r.status && r.method !== 'qr' ? ` <span class="muted">(${METHOD_LABEL[r.method] || r.method})</span>` : ''}</td>
-      <td class="muted">${r.checked_at ? esc(r.checked_at.slice(11, 19)) : '-'}</td>
+      <td class="muted">${r.checked_at ? esc(r.checked_at.slice(11, 16)) : '-'}</td>
+      <td class="muted">${r.left_at ? esc(r.left_at.slice(11, 16)) : '-'}</td>
       <td>
         <select onchange="mark(${r.id}, this.value); this.value='';">
           <option value="">변경...</option>
@@ -75,7 +76,7 @@ async function load() {
           <option value="absent">결석</option>
         </select>
       </td>
-    </tr>`).join('') || '<tr><td colspan="4" class="muted">이 반에 학생이 없습니다.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">이 반에 학생이 없습니다.</td></tr>';
 }
 
 async function mark(studentId, status) {
