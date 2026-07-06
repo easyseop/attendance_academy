@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS classes (
   name TEXT NOT NULL,
   schedule_text TEXT DEFAULT '',
   late_after_min INTEGER NOT NULL DEFAULT 10,
+  -- 수업 시작 후 이 시간(분)이 지나면 자동으로 수업 마감(미체크 → 결석). 0이면 자동 마감 안 함.
+  duration_min INTEGER NOT NULL DEFAULT 90,
   -- NFC 태그/인쇄 QR에 담기는 반별 고정 토큰 (문 옆 태그에 1회 기록해두면 됨)
   nfc_token TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -43,6 +45,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   qr_secret TEXT NOT NULL,
   started_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
   ended_at TEXT
+);
+
+-- 선생님 로그인 세션 토큰 (PIN을 쿠키에 직접 담지 않기 위함)
+CREATE TABLE IF NOT EXISTS teacher_sessions (
+  token TEXT PRIMARY KEY,
+  expires_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS attendance (
@@ -84,6 +92,11 @@ if (!clsCols.includes('nfc_token')) {
 const fillToken = db.prepare('UPDATE classes SET nfc_token = ? WHERE id = ?');
 for (const row of db.prepare('SELECT id FROM classes WHERE nfc_token IS NULL').all()) {
   fillToken.run(crypto.randomBytes(12).toString('hex'), row.id);
+}
+
+// classes.duration_min (자동 마감 시간) 컬럼 추가
+if (!clsCols.includes('duration_min')) {
+  db.exec('ALTER TABLE classes ADD COLUMN duration_min INTEGER NOT NULL DEFAULT 90');
 }
 
 // 학원 공용 태그 토큰 발급 (최초 1회)

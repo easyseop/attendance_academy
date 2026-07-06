@@ -12,6 +12,7 @@
     <h1>📋 학원 출석체크</h1>
     <a href="/stats.html">출석 통계</a>
     <a href="/notifications.html">알림 내역</a>
+    <a href="#" id="logout-link">로그아웃</a>
   </header>
 
   <div class="card">
@@ -19,10 +20,16 @@
     <div class="row">
       <input id="cls-name" placeholder="반 이름 (예: 중2 수학 A반)" style="flex:2;min-width:180px;">
       <input id="cls-schedule" placeholder="시간표 메모 (예: 월수금 16:00)" style="flex:2;min-width:160px;">
-      <input id="cls-late" type="number" value="10" min="0" title="지각 기준(분)" style="width:80px;">
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <label class="muted">지각 기준 <input id="cls-late" type="number" value="10" min="0" style="width:70px;">분</label>
+      <label class="muted">수업 길이 <input id="cls-duration" type="number" value="90" min="0" style="width:70px;">분</label>
       <button id="cls-add">추가</button>
     </div>
-    <p class="muted" style="margin-top:6px;">숫자는 지각 기준(분) — 수업 시작 후 이 시간이 지나 스캔하면 지각으로 기록됩니다.</p>
+    <p class="muted" style="margin-top:6px;">
+      · <strong>지각 기준</strong>: 수업 시작 후 이 시간이 지나 출석하면 지각으로 기록<br>
+      · <strong>수업 길이</strong>: 시작 후 이 시간이 지나면 자동으로 수업 마감(미출석자 결석 처리). 0으로 두면 자동 마감 안 함
+    </p>
     <p class="error" id="cls-error" style="display:none;"></p>
   </div>
 
@@ -87,6 +94,7 @@ document.getElementById('cls-add').onclick = async () => {
       name: document.getElementById('cls-name').value,
       schedule_text: document.getElementById('cls-schedule').value,
       late_after_min: document.getElementById('cls-late').value,
+      duration_min: document.getElementById('cls-duration').value,
     }});
     document.getElementById('cls-name').value = '';
     document.getElementById('cls-schedule').value = '';
@@ -113,6 +121,12 @@ document.getElementById('copy-academy').onclick = async () => {
 document.getElementById('show-academy-qr').onclick = () => {
   const box = document.getElementById('academy-qr-box');
   box.style.display = box.style.display === 'none' ? '' : 'none';
+};
+
+document.getElementById('logout-link').onclick = async (e) => {
+  e.preventDefault();
+  await fetch('/api/logout', { method: 'POST' });
+  location.reload();
 };
 
 load().catch(() => {});

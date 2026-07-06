@@ -21,9 +21,34 @@
       </div>
       <div class="row">
         <button id="start-session">수업 시작</button>
+        <button class="ghost" id="edit-class" style="color:var(--primary);border-color:var(--primary);">설정 수정</button>
         <button class="ghost" id="delete-class">반 삭제</button>
       </div>
     </div>
+    <div id="edit-form" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+      <div class="row">
+        <label class="muted">반 이름 <input id="ed-name" style="min-width:160px;"></label>
+        <label class="muted">시간표 <input id="ed-schedule" style="min-width:160px;"></label>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <label class="muted">지각 기준 <input id="ed-late" type="number" min="0" style="width:70px;">분</label>
+        <label class="muted">수업 길이 <input id="ed-duration" type="number" min="0" style="width:70px;">분</label>
+        <button id="ed-save">저장</button>
+        <button class="ghost" id="ed-cancel">취소</button>
+      </div>
+      <p class="muted" style="margin-top:6px;">수업 길이 0 = 자동 마감 안 함</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="session-head" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <h2 style="margin:0;">📁 월별 출석부 내보내기</h2>
+      <div class="row">
+        <input type="month" id="export-month">
+        <button id="export-btn">CSV 다운로드</button>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:8px;">엑셀에서 바로 열 수 있는 출석부 파일(학생 × 날짜)을 내려받습니다.</p>
   </div>
 
   <div class="card">
@@ -72,12 +97,16 @@
 <script>
 const classId = new URLSearchParams(location.search).get('id');
 
+let current = null;
+
 async function load() {
   const c = await api(`/api/admin/classes/${classId}`);
+  current = c;
   document.title = `${c.name} - 반 관리`;
   document.getElementById('cls-name').textContent = c.name;
   document.getElementById('cls-meta').textContent =
-    `${c.schedule_text || '시간표 미입력'} · 지각 기준 ${c.late_after_min}분 · 학생 ${c.students.length}명`;
+    `${c.schedule_text || '시간표 미입력'} · 지각 기준 ${c.late_after_min}분 · `
+    + `${c.duration_min > 0 ? `수업 ${c.duration_min}분 후 자동 마감` : '자동 마감 없음'} · 학생 ${c.students.length}명`;
 
   document.getElementById('student-rows').innerHTML = c.students.map(s => `
     <tr>
@@ -144,6 +173,35 @@ async function resetDevice(id) {
   await api(`/api/admin/students/${id}/reset-device`, { method: 'POST' });
   load();
 }
+
+// ---- 반 설정 수정 ----
+const editForm = document.getElementById('edit-form');
+document.getElementById('edit-class').onclick = () => {
+  document.getElementById('ed-name').value = current.name;
+  document.getElementById('ed-schedule').value = current.schedule_text || '';
+  document.getElementById('ed-late').value = current.late_after_min;
+  document.getElementById('ed-duration').value = current.duration_min;
+  editForm.style.display = editForm.style.display === 'none' ? '' : 'none';
+};
+document.getElementById('ed-cancel').onclick = () => { editForm.style.display = 'none'; };
+document.getElementById('ed-save').onclick = async () => {
+  await api(`/api/admin/classes/${classId}`, { method: 'PATCH', body: {
+    name: document.getElementById('ed-name').value,
+    schedule_text: document.getElementById('ed-schedule').value,
+    late_after_min: document.getElementById('ed-late').value,
+    duration_min: document.getElementById('ed-duration').value,
+  }});
+  editForm.style.display = 'none';
+  load();
+};
+
+// ---- 월별 CSV 내보내기 ----
+const monthInput = document.getElementById('export-month');
+monthInput.value = new Date().toISOString().slice(0, 7);
+document.getElementById('export-btn').onclick = () => {
+  const m = monthInput.value || new Date().toISOString().slice(0, 7);
+  location.href = `/api/admin/classes/${classId}/export?month=${m}`;
+};
 
 document.getElementById('start-session').onclick = async () => {
   const { id } = await api(`/api/admin/classes/${classId}/sessions`, { method: 'POST' });

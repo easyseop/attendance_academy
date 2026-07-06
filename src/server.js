@@ -1,8 +1,11 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 const QRCode = require('qrcode');
 const db = require('./db');
+
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -42,22 +45,67 @@ function verifyQrToken(secret, token) {
 }
 
 // ---------- 선생님 인증 ----------
+// PIN을 쿠키에 직접 담지 않고, 로그인 시 무작위 세션 토큰을 발급해 DB에 보관한다.
+const AUTH_TTL_HOURS = 12;
+
+function isValidTeacher(req) {
+  const token = parseCookies(req).teacher_session;
+  if (!token) return false;
+  const row = db.prepare('SELECT expires_at FROM teacher_sessions WHERE token = ?').get(token);
+  if (!row) return false;
+  if (new Date(row.expires_at.replace(' ', 'T')).getTime() < Date.now()) {
+    db.prepare('DELETE FROM teacher_sessions WHERE token = ?').run(token);
+    return false;
+  }
+  return true;
+}
+
 function requireTeacher(req, res, next) {
-  const cookies = parseCookies(req);
-  if (cookies.teacher_pin === TEACHER_PIN) return next();
+  if (isValidTeacher(req)) return next();
   res.status(401).json({ error: 'unauthorized' });
 }
 
+// 로그인 시도 제한 (무차별 대입 방지). 로컬망 기준이라 전역 카운터로 충분.
+const loginGuard = { fails: 0, lockedUntil: 0 };
+
 app.post('/api/login', (req, res) => {
+  const now = Date.now();
+  if (now < loginGuard.lockedUntil) {
+    const wait = Math.ceil((loginGuard.lockedUntil - now) / 1000);
+    return res.status(429).json({ error: `로그인 시도가 많습니다. ${wait}초 후 다시 시도하세요.` });
+  }
   const { pin } = req.body || {};
-  if (pin !== TEACHER_PIN) return res.status(401).json({ error: 'PIN이 올바르지 않습니다.' });
-  res.setHeader('Set-Cookie', `teacher_pin=${encodeURIComponent(pin)}; Path=/; Max-Age=${60 * 60 * 12}; SameSite=Lax`);
+  // 타이밍 공격 방지를 위한 상수 시간 비교
+  const given = Buffer.from(String(pin || ''));
+  const expected = Buffer.from(TEACHER_PIN);
+  const ok = given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  if (!ok) {
+    loginGuard.fails += 1;
+    if (loginGuard.fails >= 5) {
+      loginGuard.lockedUntil = now + 30 * 1000; // 5회 실패 시 30초 잠금
+      loginGuard.fails = 0;
+    }
+    return res.status(401).json({ error: 'PIN이 올바르지 않습니다.' });
+  }
+  loginGuard.fails = 0;
+  const token = crypto.randomBytes(24).toString('hex');
+  const expires = new Date(now + AUTH_TTL_HOURS * 60 * 60 * 1000)
+    .toISOString().slice(0, 19).replace('T', ' ');
+  db.prepare('INSERT INTO teacher_sessions (token, expires_at) VALUES (?, ?)').run(token, expires);
+  res.setHeader('Set-Cookie',
+    `teacher_session=${token}; Path=/; Max-Age=${AUTH_TTL_HOURS * 60 * 60}; SameSite=Lax; HttpOnly`);
+  res.json({ ok: true });
+});
+
+app.post('/api/logout', (req, res) => {
+  const token = parseCookies(req).teacher_session;
+  if (token) db.prepare('DELETE FROM teacher_sessions WHERE token = ?').run(token);
+  res.setHeader('Set-Cookie', 'teacher_session=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly');
   res.json({ ok: true });
 });
 
 app.get('/api/me', (req, res) => {
-  const cookies = parseCookies(req);
-  res.json({ teacher: cookies.teacher_pin === TEACHER_PIN });
+  res.json({ teacher: isValidTeacher(req) });
 });
 
 // ---------- 반(커리큘럼) 관리 ----------
@@ -71,11 +119,28 @@ app.get('/api/admin/classes', requireTeacher, (req, res) => {
 });
 
 app.post('/api/admin/classes', requireTeacher, (req, res) => {
-  const { name, schedule_text = '', late_after_min = 10 } = req.body || {};
+  const { name, schedule_text = '', late_after_min = 10, duration_min = 90 } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: '반 이름을 입력하세요.' });
-  const info = db.prepare('INSERT INTO classes (name, schedule_text, late_after_min, nfc_token) VALUES (?, ?, ?, ?)')
-    .run(name.trim(), schedule_text.trim(), Number(late_after_min) || 10, crypto.randomBytes(12).toString('hex'));
+  const info = db.prepare(
+    'INSERT INTO classes (name, schedule_text, late_after_min, duration_min, nfc_token) VALUES (?, ?, ?, ?, ?)'
+  ).run(name.trim(), schedule_text.trim(), Number(late_after_min) || 10,
+    Math.max(0, Number(duration_min) || 0), crypto.randomBytes(12).toString('hex'));
   res.json({ id: info.lastInsertRowid });
+});
+
+app.patch('/api/admin/classes/:id', requireTeacher, (req, res) => {
+  const cls = db.prepare('SELECT * FROM classes WHERE id = ?').get(req.params.id);
+  if (!cls) return res.status(404).json({ error: 'not found' });
+  const { name, schedule_text, late_after_min, duration_min } = req.body || {};
+  db.prepare('UPDATE classes SET name = ?, schedule_text = ?, late_after_min = ?, duration_min = ? WHERE id = ?')
+    .run(
+      (name ?? cls.name).trim() || cls.name,
+      (schedule_text ?? cls.schedule_text).trim(),
+      late_after_min == null ? cls.late_after_min : Number(late_after_min) || 0,
+      duration_min == null ? cls.duration_min : Math.max(0, Number(duration_min) || 0),
+      cls.id
+    );
+  res.json({ ok: true });
 });
 
 app.delete('/api/admin/classes/:id', requireTeacher, (req, res) => {
@@ -143,7 +208,7 @@ app.get('/api/admin/classes/:id/tap-info', requireTeacher, async (req, res) => {
 
 app.get('/api/admin/sessions/:id', requireTeacher, (req, res) => {
   const ss = db.prepare(`
-    SELECT ss.*, c.name AS class_name, c.late_after_min FROM sessions ss
+    SELECT ss.*, c.name AS class_name, c.late_after_min, c.duration_min FROM sessions ss
     JOIN classes c ON c.id = ss.class_id WHERE ss.id = ?
   `).get(req.params.id);
   if (!ss) return res.status(404).json({ error: 'not found' });
@@ -157,26 +222,32 @@ app.get('/api/admin/sessions/:id', requireTeacher, (req, res) => {
   res.json({ ...ss, roster });
 });
 
-// 수업 종료: 미체크 학생은 결석 처리 + 학부모 알림 대기열 등록
+// 수업 종료: 미체크 학생은 결석 처리 + 학부모 알림 대기열 등록. auto=true면 '자동 마감'.
+function endSession(sessionId, { auto = false } = {}) {
+  const ss = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+  if (!ss || ss.ended_at) return false;
+  const unchecked = db.prepare(`
+    SELECT s.* FROM students s
+    WHERE s.class_id = ? AND s.id NOT IN (SELECT student_id FROM attendance WHERE session_id = ?)
+  `).all(ss.class_id, ss.id);
+  const markAbsent = db.prepare(
+    "INSERT INTO attendance (session_id, student_id, status, method) VALUES (?, ?, 'absent', 'manual')");
+  const tx = db.transaction(() => {
+    for (const st of unchecked) {
+      markAbsent.run(ss.id, st.id);
+      queueNotification(st, `[학원 알림] ${st.name} 학생이 오늘 수업에 출석하지 않았습니다.`);
+    }
+    db.prepare("UPDATE sessions SET ended_at = datetime('now', 'localtime') WHERE id = ?").run(ss.id);
+  });
+  tx();
+  if (auto) console.log(`[자동 마감] 세션 ${ss.id} 종료, 미체크 ${unchecked.length}명 결석 처리`);
+  return true;
+}
+
 app.post('/api/admin/sessions/:id/end', requireTeacher, (req, res) => {
-  const ss = db.prepare('SELECT * FROM sessions WHERE id = ?').get(req.params.id);
+  const ss = db.prepare('SELECT id FROM sessions WHERE id = ?').get(req.params.id);
   if (!ss) return res.status(404).json({ error: 'not found' });
-  if (!ss.ended_at) {
-    const unchecked = db.prepare(`
-      SELECT s.* FROM students s
-      WHERE s.class_id = ? AND s.id NOT IN (SELECT student_id FROM attendance WHERE session_id = ?)
-    `).all(ss.class_id, ss.id);
-    const markAbsent = db.prepare(
-      "INSERT INTO attendance (session_id, student_id, status, method) VALUES (?, ?, 'absent', 'manual')");
-    const tx = db.transaction(() => {
-      for (const st of unchecked) {
-        markAbsent.run(ss.id, st.id);
-        queueNotification(st, `[학원 알림] ${st.name} 학생이 오늘 수업에 출석하지 않았습니다.`);
-      }
-      db.prepare("UPDATE sessions SET ended_at = datetime('now', 'localtime') WHERE id = ?").run(ss.id);
-    });
-    tx();
-  }
+  endSession(ss.id);
   res.json({ ok: true });
 });
 
@@ -344,16 +415,13 @@ app.post('/api/checkin', (req, res) => {
   res.json({ mode: 'register', class_name: ss.class_name, session_id: ss.id, roster });
 });
 
-// 최초 1회 기기 등록(동의) + 출석 처리
-app.post('/api/register', (req, res) => {
-  const { student_id } = req.body || {};
-  const { ss, method, error } = resolveCheckinTarget(req.body);
-  if (error) return res.status(400).json({ error });
-  const student = db.prepare('SELECT * FROM students WHERE id = ? AND class_id = ?').get(student_id, ss.class_id);
-  if (!student) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+// 기기 등록(동의) + 출석 처리 + 반별 장기 쿠키 발급 (register/self-register 공통)
+function registerDeviceAndCheckin(res, ss, student, method) {
   const existing = db.prepare('SELECT 1 FROM devices WHERE student_id = ?').get(student.id);
-  if (existing) return res.status(400).json({ error: '이미 다른 기기가 등록된 학생입니다. 선생님께 기기 재등록을 요청하세요.' });
-
+  if (existing) {
+    res.status(400).json({ error: '이미 다른 기기가 등록된 학생입니다. 선생님께 기기 재등록을 요청하세요.' });
+    return;
+  }
   const token = crypto.randomBytes(24).toString('hex');
   db.prepare('INSERT INTO devices (student_id, token) VALUES (?, ?)').run(student.id, token);
   const result = recordAttendance(ss, student, method);
@@ -361,33 +429,35 @@ app.post('/api/register', (req, res) => {
   res.setHeader('Set-Cookie',
     `dt_${ss.class_id}=${token}; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax; HttpOnly`);
   res.json({ mode: 'checked', class_name: ss.class_name, student_name: student.name, ...result });
+}
+
+// 최초 1회 기기 등록(동의) + 출석 처리 — 명단에서 학생을 선택한 경우
+app.post('/api/register', (req, res) => {
+  const { student_id } = req.body || {};
+  const { ss, method, error } = resolveCheckinTarget(req.body);
+  if (error) return res.status(400).json({ error });
+  const student = db.prepare('SELECT * FROM students WHERE id = ? AND class_id = ?').get(student_id, ss.class_id);
+  if (!student) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+  registerDeviceAndCheckin(res, ss, student, method);
 });
 
-// 명단에 없는 학생이 본인 정보를 직접 입력해 등록 + 출석 (최초 1회)
+// 이름을 직접 입력해 등록 — 선생님이 등록한 명단에 있는 이름만 허용 (없으면 오류)
 app.post('/api/self-register', (req, res) => {
-  const { name, parent_phone = '' } = req.body || {};
+  const { name } = req.body || {};
   const { ss, method, error } = resolveCheckinTarget(req.body);
   if (error) return res.status(400).json({ error });
   const trimmed = (name || '').trim();
   if (!trimmed) return res.status(400).json({ error: '이름을 입력해 주세요.' });
-  if (trimmed.length > 20) return res.status(400).json({ error: '이름이 너무 깁니다.' });
-  const dup = db.prepare('SELECT 1 FROM students WHERE class_id = ? AND name = ?').get(ss.class_id, trimmed);
-  if (dup) {
-    return res.status(400).json({ error: '이미 명단에 있는 이름입니다. 목록에서 본인 이름을 선택하거나 선생님께 문의하세요.' });
+  // 공백/대소문자 차이를 무시하고 명단과 매칭
+  const matches = db.prepare('SELECT * FROM students WHERE class_id = ?').all(ss.class_id)
+    .filter((s) => s.name.replace(/\s/g, '').toLowerCase() === trimmed.replace(/\s/g, '').toLowerCase());
+  if (matches.length === 0) {
+    return res.status(404).json({ error: '명단에 없는 이름입니다. 이름을 다시 확인하거나 선생님께 문의하세요.' });
   }
-
-  const token = crypto.randomBytes(24).toString('hex');
-  const tx = db.transaction(() => {
-    const info = db.prepare('INSERT INTO students (class_id, name, parent_phone) VALUES (?, ?, ?)')
-      .run(ss.class_id, trimmed, String(parent_phone).trim());
-    db.prepare('INSERT INTO devices (student_id, token) VALUES (?, ?)').run(info.lastInsertRowid, token);
-    return db.prepare('SELECT * FROM students WHERE id = ?').get(info.lastInsertRowid);
-  });
-  const student = tx();
-  const result = recordAttendance(ss, student, method);
-  res.setHeader('Set-Cookie',
-    `dt_${ss.class_id}=${token}; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax; HttpOnly`);
-  res.json({ mode: 'checked', class_name: ss.class_name, student_name: student.name, self_registered: true, ...result });
+  if (matches.length > 1) {
+    return res.status(400).json({ error: '같은 이름의 학생이 여러 명입니다. 선생님께 문의하세요.' });
+  }
+  registerDeviceAndCheckin(res, ss, matches[0], method);
 });
 
 // 학원 공용 태그 URL (+ 인쇄용 QR) — 모든 반 공통, 태그 시 진행 중인 수업 선택
@@ -424,6 +494,42 @@ app.get('/api/admin/stats', requireTeacher, (req, res) => {
   res.json({ date, sessions: out });
 });
 
+// 월별 출석부 CSV 내보내기 (반별). 엑셀에서 바로 열 수 있도록 UTF-8 BOM 포함.
+app.get('/api/admin/classes/:id/export', requireTeacher, (req, res) => {
+  const cls = db.prepare('SELECT * FROM classes WHERE id = ?').get(req.params.id);
+  if (!cls) return res.status(404).json({ error: 'not found' });
+  const month = /^\d{4}-\d{2}$/.test(String(req.query.month || ''))
+    ? req.query.month
+    : db.prepare("SELECT strftime('%Y-%m', 'now', 'localtime') AS m").get().m;
+
+  const sessions = db.prepare(
+    "SELECT * FROM sessions WHERE class_id = ? AND strftime('%Y-%m', started_at) = ? ORDER BY started_at"
+  ).all(cls.id, month);
+  const students = db.prepare('SELECT * FROM students WHERE class_id = ? ORDER BY name').all(cls.id);
+  const attStmt = db.prepare('SELECT status FROM attendance WHERE session_id = ? AND student_id = ?');
+  const LABEL = { present: '출석', late: '지각', absent: '결석' };
+
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const header = ['이름', ...sessions.map((s) => s.started_at.slice(5, 16)), '출석', '지각', '결석'];
+  const lines = [header.map(esc).join(',')];
+  for (const st of students) {
+    const cells = [st.name];
+    const tally = { present: 0, late: 0, absent: 0 };
+    for (const ss of sessions) {
+      const a = attStmt.get(ss.id, st.id);
+      if (a && tally[a.status] !== undefined) tally[a.status] += 1;
+      cells.push(a ? (LABEL[a.status] || '') : '-');
+    }
+    cells.push(tally.present, tally.late, tally.absent);
+    lines.push(cells.map(esc).join(','));
+  }
+  const csv = '﻿' + lines.join('\r\n');
+  const fname = encodeURIComponent(`출석부_${cls.name}_${month}.csv`);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${fname}`);
+  res.send(csv);
+});
+
 // 태블릿 터치 출석: 입구 태블릿(선생님 기기)에서 학생이 자기 이름을 터치
 app.post('/api/admin/sessions/:id/kiosk-checkin', requireTeacher, (req, res) => {
   const ss = db.prepare(`
@@ -438,8 +544,53 @@ app.post('/api/admin/sessions/:id/kiosk-checkin', requireTeacher, (req, res) => 
   res.json({ student_name: student.name, class_name: ss.class_name, ...result });
 });
 
+// ---------- 자동 마감 스케줄러 ----------
+// 진행 중인 수업 중 (지금 - 시작) > 반의 duration_min 이면 자동 마감.
+// duration_min이 0인 반은 자동 마감하지 않는다.
+function runAutoClose() {
+  const rows = db.prepare(`
+    SELECT ss.id, ss.started_at, c.duration_min FROM sessions ss
+    JOIN classes c ON c.id = ss.class_id
+    WHERE ss.ended_at IS NULL AND c.duration_min > 0
+  `).all();
+  const now = Date.now();
+  for (const r of rows) {
+    const startedMs = new Date(r.started_at.replace(' ', 'T')).getTime();
+    if (now - startedMs >= r.duration_min * 60 * 1000) {
+      try { endSession(r.id, { auto: true }); } catch (e) { console.error('자동 마감 실패:', e.message); }
+    }
+  }
+  // 만료된 로그인 세션도 함께 청소
+  db.prepare("DELETE FROM teacher_sessions WHERE expires_at < datetime('now', 'localtime')").run();
+}
+
+// ---------- 자동 백업 스케줄러 ----------
+// 하루 1회 data/backups/attendance-YYYYMMDD.db 로 복사. 최근 14개만 보관.
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+function runBackup() {
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const target = path.join(BACKUP_DIR, `attendance-${today}.db`);
+    if (fs.existsSync(target)) return; // 오늘 이미 백업함
+    // better-sqlite3 온라인 백업 (WAL 포함 일관된 복사본)
+    db.backup(target).then(() => {
+      const files = fs.readdirSync(BACKUP_DIR)
+        .filter((f) => f.startsWith('attendance-') && f.endsWith('.db')).sort();
+      for (const f of files.slice(0, -14)) fs.unlinkSync(path.join(BACKUP_DIR, f));
+      console.log(`[백업] ${target}`);
+    }).catch((e) => console.error('백업 실패:', e.message));
+  } catch (e) {
+    console.error('백업 실패:', e.message);
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`출석체크 서버 실행 중: http://localhost:${PORT} (선생님 PIN: ${TEACHER_PIN})`);
+  runAutoClose();
+  runBackup();
+  setInterval(runAutoClose, 60 * 1000);      // 1분마다 자동 마감 점검
+  setInterval(runBackup, 6 * 60 * 60 * 1000); // 6시간마다 백업 점검(날짜 바뀌면 생성)
 });
 
 module.exports = app;

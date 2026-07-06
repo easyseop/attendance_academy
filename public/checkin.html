@@ -77,20 +77,26 @@ function showSelectClass(data) {
 
 function showRegister(data) {
   if (data.session_id) payload.session_id = data.session_id;
+  const many = data.roster.length > 8;
   panel.innerHTML = `
     <div class="result-icon">👋</div>
     <h1>처음 오셨네요!</h1>
     <p class="muted" style="font-size:16px;">${esc(data.class_name)}</p>
-    ${data.roster.length ? '<p style="margin:12px 0 4px;">본인 이름을 선택하세요. <strong>딱 한 번만</strong> 선택하면<br>다음부터는 태그/스캔만으로 자동 출석됩니다.</p>' : ''}
+    ${data.roster.length ? '<p style="margin:12px 0 4px;">본인 이름을 선택하세요. <strong>딱 한 번만</strong> 선택하면<br>다음부터는 태그/스캔만으로 자동 출석됩니다.</p>'
+      : '<p style="margin:12px 0 4px;">아래에 본인 이름을 입력하세요.</p>'}
+    ${many ? '<input id="roster-search" placeholder="🔍 이름 검색" style="width:100%;margin-bottom:8px;font-size:17px;">' : ''}
     <div id="roster"></div>
+    <p id="no-match" class="muted" style="display:none;">검색 결과가 없습니다.</p>
     <button class="roster-btn" id="self-reg-toggle" style="border-style:dashed;color:var(--muted);">
-      ✏️ 명단에 이름이 없어요 — 직접 입력하기
+      ✏️ 목록에 없나요? 이름 직접 입력하기
     </button>
     <div id="self-reg-form" style="display:none;margin-top:10px;">
       <input id="sr-name" placeholder="이름" style="width:100%;margin-bottom:8px;font-size:17px;">
-      <input id="sr-phone" placeholder="학부모 연락처 (선택)" inputmode="tel" style="width:100%;margin-bottom:8px;font-size:17px;">
-      <button class="big" id="sr-submit">등록하고 출석하기</button>
+      <button class="big" id="sr-submit">출석하기</button>
       <p class="error" id="sr-error" style="display:none;"></p>
+      <p class="muted" style="font-size:13px;margin-top:6px;">
+        선생님이 등록한 명단에 있는 이름만 가능합니다. 이름이 안 되면 선생님께 문의하세요.
+      </p>
     </div>
     <p class="muted" style="margin-top:14px;font-size:13px;">
       이름을 선택(입력)하면 출석 확인 목적으로 이 기기가 본인 명의로 등록되고,<br>
@@ -98,6 +104,7 @@ function showRegister(data) {
     </p>`;
 
   const rosterEl = document.getElementById('roster');
+  const buttons = [];
   for (const s of data.roster) {
     const btn = document.createElement('button');
     btn.className = 'roster-btn';
@@ -108,25 +115,39 @@ function showRegister(data) {
       catch (e) { showError(e.message); }
     };
     rosterEl.appendChild(btn);
+    buttons.push({ name: s.name, el: btn });
   }
 
+  const search = document.getElementById('roster-search');
+  if (search) {
+    search.oninput = () => {
+      const q = search.value.replace(/\s/g, '').toLowerCase();
+      let shown = 0;
+      for (const b of buttons) {
+        const hit = b.name.replace(/\s/g, '').toLowerCase().includes(q);
+        b.el.style.display = hit ? '' : 'none';
+        if (hit) shown++;
+      }
+      document.getElementById('no-match').style.display = shown ? 'none' : '';
+    };
+  }
+
+  const submitName = async () => {
+    const errEl = document.getElementById('sr-error');
+    errEl.style.display = 'none';
+    const name = document.getElementById('sr-name').value.trim();
+    if (!name) { errEl.textContent = '이름을 입력해 주세요.'; errEl.style.display = 'block'; return; }
+    if (!confirm(`"${name}" 학생 본인이 맞나요?`)) return;
+    try { showChecked(await post('/api/self-register', { ...payload, name })); }
+    catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+  };
   document.getElementById('self-reg-toggle').onclick = () => {
     const form = document.getElementById('self-reg-form');
     form.style.display = form.style.display === 'none' ? '' : 'none';
     document.getElementById('sr-name').focus();
   };
-  document.getElementById('sr-submit').onclick = async () => {
-    const errEl = document.getElementById('sr-error');
-    errEl.style.display = 'none';
-    const name = document.getElementById('sr-name').value.trim();
-    if (!name) { errEl.textContent = '이름을 입력해 주세요.'; errEl.style.display = 'block'; return; }
-    if (!confirm(`"${name}" 이름으로 등록하고 출석할까요?`)) return;
-    try {
-      showChecked(await post('/api/self-register', {
-        ...payload, name, parent_phone: document.getElementById('sr-phone').value,
-      }));
-    } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
-  };
+  document.getElementById('sr-submit').onclick = submitName;
+  document.getElementById('sr-name').onkeydown = (e) => { if (e.key === 'Enter') submitName(); };
 }
 
 async function checkin() {
