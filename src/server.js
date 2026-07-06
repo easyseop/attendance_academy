@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const QRCode = require('qrcode');
 const db = require('./db');
 
@@ -642,8 +643,36 @@ function runBackup() {
   }
 }
 
+// 같은 Wi-Fi의 학생 폰이 접속할 수 있는 이 컴퓨터의 LAN IP 목록
+function lanAddresses() {
+  const out = [];
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const i of ifaces || []) {
+      if (i.family === 'IPv4' && !i.internal) out.push(i.address);
+    }
+  }
+  return out;
+}
+
 app.listen(PORT, () => {
-  console.log(`출석체크 서버 실행 중: http://localhost:${PORT} (선생님 PIN: ${TEACHER_PIN})`);
+  console.log('');
+  console.log('  ─────────────────────────────────────────────');
+  console.log('   출석체크 서버가 실행 중입니다.');
+  console.log('');
+  console.log(`   선생님용 (이 컴퓨터): http://localhost:${PORT}`);
+  const ips = lanAddresses();
+  if (ips.length) {
+    console.log('   학생 폰 접속 주소 (같은 Wi-Fi):');
+    for (const ip of ips) console.log(`     → http://${ip}:${PORT}`);
+    console.log('');
+    console.log('   ※ NFC/QR 주소를 복사할 때는 반드시 위의 학생용 주소로');
+    console.log('     접속한 화면에서 복사하세요 (localhost 주소는 학생 폰에서 안 열립니다)');
+  } else {
+    console.log('   ⚠ 네트워크 연결이 없어 학생 폰 접속 주소를 찾지 못했습니다.');
+    console.log('     Wi-Fi 또는 랜선 연결 후 서버를 다시 실행해 주세요.');
+  }
+  console.log('  ─────────────────────────────────────────────');
+  console.log('');
   runAutoClose();
   runBackup();
   setInterval(runAutoClose, 60 * 1000);      // 1분마다 자동 마감 점검
