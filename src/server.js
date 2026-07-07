@@ -113,7 +113,10 @@ app.get('/api/me', (req, res) => {
 function normalizeWeekdays(input) {
   if (input == null) return null;
   const arr = Array.isArray(input) ? input : String(input).split(',');
-  const days = [...new Set(arr.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))];
+  const days = [...new Set(arr
+    .filter((v) => String(v).trim() !== '') // Number('')===0 이라 빈 값이 일요일로 둔갑하는 것 방지
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))];
   days.sort((a, b) => a - b);
   return days.join(',');
 }

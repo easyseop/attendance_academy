@@ -51,7 +51,6 @@ function showChecked(data) {
     <h1>${esc(data.student_name)}님 ${isLate ? '지각 체크' : '출석 완료'}!</h1>
     <p class="muted" style="font-size:16px;">${esc(data.class_name)} · ${time}</p>
     ${data.duplicate ? '<p class="muted">이미 출석 처리된 수업입니다.</p>' : ''}
-    ${data.self_registered ? '<p class="muted">명단 등록도 함께 완료되었습니다.</p>' : ''}
     <p class="muted" style="margin-top:16px;">이 화면을 닫으셔도 됩니다. 다음부터는 태그/스캔만 하면 자동 출석됩니다.</p>`;
 }
 
@@ -100,7 +99,7 @@ function showRegister(data) {
     </div>
     <p class="muted" style="margin-top:14px;font-size:13px;">
       이름을 선택(입력)하면 출석 확인 목적으로 이 기기가 본인 명의로 등록되고,<br>
-      등원 시각이 기록되어 학부모님께 알림이 발송되는 것에 동의하게 됩니다.
+      출석 시각이 기록되는 것에 동의하게 됩니다.
     </p>`;
 
   const rosterEl = document.getElementById('roster');
