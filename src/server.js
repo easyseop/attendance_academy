@@ -109,6 +109,23 @@ app.get('/api/me', (req, res) => {
   res.json({ teacher: isValidTeacher(req) });
 });
 
+// 요일 배열(0~6, 0=일요일)을 검증해 저장용 콤마 문자열로 변환. 잘못된 값은 무시.
+function normalizeWeekdays(input) {
+  if (input == null) return null;
+  const arr = Array.isArray(input) ? input : String(input).split(',');
+  const days = [...new Set(arr.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))];
+  days.sort((a, b) => a - b);
+  return days.join(',');
+}
+
+const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
+// 오늘 요일(한국/서버 기준). 대시보드에서 "오늘 수업"을 가려내는 데 사용.
+app.get('/api/admin/today', requireTeacher, (req, res) => {
+  const weekday = new Date().getDay(); // 0=일요일 ... 6=토요일
+  res.json({ weekday, label: `${WEEKDAY_LABELS[weekday]}요일` });
+});
+
 // ---------- 반(커리큘럼) 관리 ----------
 app.get('/api/admin/classes', requireTeacher, (req, res) => {
   const rows = db.prepare(`
@@ -120,25 +137,28 @@ app.get('/api/admin/classes', requireTeacher, (req, res) => {
 });
 
 app.post('/api/admin/classes', requireTeacher, (req, res) => {
-  const { name, schedule_text = '', late_after_min = 10, duration_min = 90 } = req.body || {};
+  const { name, schedule_text = '', late_after_min = 10, duration_min = 90, weekdays } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: '반 이름을 입력하세요.' });
   const info = db.prepare(
-    'INSERT INTO classes (name, schedule_text, late_after_min, duration_min, nfc_token) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO classes (name, schedule_text, late_after_min, duration_min, weekdays, nfc_token) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(name.trim(), schedule_text.trim(), Number(late_after_min) || 10,
-    Math.max(0, Number(duration_min) || 0), crypto.randomBytes(12).toString('hex'));
+    Math.max(0, Number(duration_min) || 0), normalizeWeekdays(weekdays) || '',
+    crypto.randomBytes(12).toString('hex'));
   res.json({ id: info.lastInsertRowid });
 });
 
 app.patch('/api/admin/classes/:id', requireTeacher, (req, res) => {
   const cls = db.prepare('SELECT * FROM classes WHERE id = ?').get(req.params.id);
   if (!cls) return res.status(404).json({ error: 'not found' });
-  const { name, schedule_text, late_after_min, duration_min } = req.body || {};
-  db.prepare('UPDATE classes SET name = ?, schedule_text = ?, late_after_min = ?, duration_min = ? WHERE id = ?')
+  const { name, schedule_text, late_after_min, duration_min, weekdays } = req.body || {};
+  const normalizedWeekdays = normalizeWeekdays(weekdays);
+  db.prepare('UPDATE classes SET name = ?, schedule_text = ?, late_after_min = ?, duration_min = ?, weekdays = ? WHERE id = ?')
     .run(
       (name ?? cls.name).trim() || cls.name,
       (schedule_text ?? cls.schedule_text).trim(),
       late_after_min == null ? cls.late_after_min : Number(late_after_min) || 0,
       duration_min == null ? cls.duration_min : Math.max(0, Number(duration_min) || 0),
+      normalizedWeekdays == null ? cls.weekdays : normalizedWeekdays,
       cls.id
     );
   res.json({ ok: true });
@@ -214,7 +234,7 @@ app.get('/api/admin/sessions/:id', requireTeacher, (req, res) => {
   `).get(req.params.id);
   if (!ss) return res.status(404).json({ error: 'not found' });
   const roster = db.prepare(`
-    SELECT s.id, s.name, a.status, a.method, a.checked_at, a.left_at
+    SELECT s.id, s.name, a.status, a.method, a.checked_at
     FROM students s
     LEFT JOIN attendance a ON a.student_id = s.id AND a.session_id = ?
     WHERE s.class_id = ? ORDER BY s.name
@@ -223,7 +243,7 @@ app.get('/api/admin/sessions/:id', requireTeacher, (req, res) => {
   res.json({ ...ss, roster });
 });
 
-// 수업 종료: 미체크 학생은 결석 처리 + 학부모 알림 대기열 등록. auto=true면 '자동 마감'.
+// 수업 종료: 미체크 학생은 결석 처리. auto=true면 '자동 마감'.
 function endSession(sessionId, { auto = false } = {}) {
   const ss = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   if (!ss || ss.ended_at) return false;
@@ -234,10 +254,7 @@ function endSession(sessionId, { auto = false } = {}) {
   const markAbsent = db.prepare(
     "INSERT INTO attendance (session_id, student_id, status, method) VALUES (?, ?, 'absent', 'manual')");
   const tx = db.transaction(() => {
-    for (const st of unchecked) {
-      markAbsent.run(ss.id, st.id);
-      queueNotification(st, `[학원 알림] ${st.name} 학생이 오늘 수업에 출석하지 않았습니다.`);
-    }
+    for (const st of unchecked) markAbsent.run(ss.id, st.id);
     db.prepare("UPDATE sessions SET ended_at = datetime('now', 'localtime') WHERE id = ?").run(ss.id);
   });
   tx();
@@ -279,23 +296,6 @@ app.get('/api/admin/sessions/:id/qr', requireTeacher, async (req, res) => {
   const dataUrl = await QRCode.toDataURL(url, { width: 480, margin: 1 });
   const expiresIn = QR_WINDOW_SEC - (Math.floor(Date.now() / 1000) % QR_WINDOW_SEC);
   res.json({ dataUrl, url, expiresIn });
-});
-
-// ---------- 알림 ----------
-function queueNotification(student, message) {
-  if (!student.parent_phone) return;
-  db.prepare('INSERT INTO notifications (student_id, phone, message) VALUES (?, ?, ?)')
-    .run(student.id, student.parent_phone, message);
-  // TODO: 실제 발송은 여기서 알림톡/SMS API(예: 카카오 비즈메시지, NHN Cloud) 호출로 교체
-  console.log(`[알림 대기열] ${student.parent_phone}: ${message}`);
-}
-
-app.get('/api/admin/notifications', requireTeacher, (req, res) => {
-  const rows = db.prepare(`
-    SELECT n.*, s.name AS student_name FROM notifications n
-    JOIN students s ON s.id = n.student_id ORDER BY n.id DESC LIMIT 50
-  `).all();
-  res.json(rows);
 });
 
 function getAcademyToken() {
@@ -343,46 +343,19 @@ function resolveCheckinTarget(body) {
   return { ss, method: 'qr' };
 }
 
-// 등원 직후 실수로 다시 태그하는 것을 하원으로 오인하지 않기 위한 최소 간격(분)
-const CHECKOUT_MIN_GAP_MIN = 3;
-
-// 태그/스캔 1회 처리. 첫 태그=등원, (일정 시간 후) 재태그=하원.
-// 반환 phase: 'in'(등원) | 'out'(하원), duplicate: 중복 태그 여부
+// 태그/스캔 1회 처리. 이미 출석했으면 duplicate=true로 기존 기록을 그대로 반환.
 function recordAttendance(ss, student, method = 'qr') {
-  const now = Date.now();
   const already = db.prepare('SELECT * FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
-
-  if (!already) {
-    // 등원
-    const startedMs = new Date(ss.started_at.replace(' ', 'T')).getTime();
-    const late = now - startedMs > ss.late_after_min * 60 * 1000;
-    const status = late ? 'late' : 'present';
-    db.prepare('INSERT INTO attendance (session_id, student_id, status, method) VALUES (?, ?, ?, ?)')
-      .run(ss.id, student.id, status, method);
-    const row = db.prepare('SELECT checked_at FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
-    queueNotification(student,
-      `[학원 알림] ${student.name} 학생이 ${row.checked_at.slice(11, 16)}에 등원했습니다. (${late ? '지각' : '출석'})`);
-    return { phase: 'in', status, checked_at: row.checked_at, left_at: null, duplicate: false };
+  if (already) {
+    return { status: already.status, checked_at: already.checked_at, duplicate: true };
   }
-
-  // 이미 하원했으면 그대로 안내
-  if (already.left_at) {
-    return { phase: 'out', status: already.status, checked_at: already.checked_at, left_at: already.left_at, duplicate: true };
-  }
-
-  // 등원 직후 짧은 시간 내 재태그는 중복(무시)
-  const checkedMs = new Date(already.checked_at.replace(' ', 'T')).getTime();
-  if (now - checkedMs < CHECKOUT_MIN_GAP_MIN * 60 * 1000) {
-    return { phase: 'in', status: already.status, checked_at: already.checked_at, left_at: null, duplicate: true };
-  }
-
-  // 하원 처리
-  db.prepare("UPDATE attendance SET left_at = datetime('now', 'localtime') WHERE session_id = ? AND student_id = ?")
-    .run(ss.id, student.id);
-  const row = db.prepare('SELECT checked_at, left_at FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
-  queueNotification(student,
-    `[학원 알림] ${student.name} 학생이 ${row.left_at.slice(11, 16)}에 하원했습니다.`);
-  return { phase: 'out', status: already.status, checked_at: row.checked_at, left_at: row.left_at, duplicate: false };
+  const startedMs = new Date(ss.started_at.replace(' ', 'T')).getTime();
+  const late = Date.now() - startedMs > ss.late_after_min * 60 * 1000;
+  const status = late ? 'late' : 'present';
+  db.prepare('INSERT INTO attendance (session_id, student_id, status, method) VALUES (?, ?, ?, ?)')
+    .run(ss.id, student.id, status, method);
+  const row = db.prepare('SELECT checked_at FROM attendance WHERE session_id = ? AND student_id = ?').get(ss.id, student.id);
+  return { status, checked_at: row.checked_at, duplicate: false };
 }
 
 // 기기 쿠키(반별 분리 저장)로 등록된 학생 찾기 — 한 학생이 여러 반에 다녀도 충돌하지 않음
@@ -507,7 +480,7 @@ app.get('/api/admin/stats', requireTeacher, (req, res) => {
     ${ACTIVE_SESSION_SQL} WHERE date(ss.started_at) = ? ORDER BY ss.started_at
   `).all(date);
   const rosterStmt = db.prepare(`
-    SELECT s.id, s.name, a.status, a.method, a.checked_at, a.left_at
+    SELECT s.id, s.name, a.status, a.method, a.checked_at
     FROM students s
     LEFT JOIN attendance a ON a.student_id = s.id AND a.session_id = ?
     WHERE s.class_id = ? ORDER BY s.name

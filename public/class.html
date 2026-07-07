@@ -30,7 +30,11 @@
         <label class="muted">반 이름 <input id="ed-name" style="min-width:160px;"></label>
         <label class="muted">시간표 <input id="ed-schedule" style="min-width:160px;"></label>
       </div>
-      <div class="row" style="margin-top:8px;">
+      <div style="margin-top:10px;">
+        <label class="muted" style="display:block;margin-bottom:6px;">수업 요일 (선택 안 하면 매일 표시)</label>
+        <div class="weekday-picker" id="ed-weekdays"></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
         <label class="muted">지각 기준 <input id="ed-late" type="number" min="0" style="width:70px;">분</label>
         <label class="muted">수업 길이 <input id="ed-duration" type="number" min="0" style="width:70px;">분</label>
         <button id="ed-save">저장</button>
@@ -60,7 +64,7 @@
     <h2>학생 명단</h2>
     <div class="row" style="margin-bottom:12px;">
       <input id="st-name" placeholder="학생 이름" style="flex:1;min-width:120px;">
-      <input id="st-phone" placeholder="학부모 연락처 (알림용, 선택)" style="flex:1;min-width:160px;">
+      <input id="st-phone" placeholder="학부모 연락처 (참고용, 선택)" style="flex:1;min-width:160px;">
       <button id="st-add">학생 추가</button>
     </div>
     <p class="error" id="st-error" style="display:none;"></p>
@@ -110,7 +114,7 @@ async function load() {
   document.title = `${c.name} - 반 관리`;
   document.getElementById('cls-name').textContent = c.name;
   document.getElementById('cls-meta').textContent =
-    `${c.schedule_text || '시간표 미입력'} · 지각 기준 ${c.late_after_min}분 · `
+    `${c.schedule_text || '시간표 미입력'} · 요일 ${weekdaysLabel(c.weekdays)} · 지각 기준 ${c.late_after_min}분 · `
     + `${c.duration_min > 0 ? `수업 ${c.duration_min}분 후 자동 마감` : '자동 마감 없음'} · 학생 ${c.students.length}명`;
 
   document.getElementById('student-rows').innerHTML = c.students.map(s => `
@@ -181,11 +185,13 @@ async function resetDevice(id) {
 
 // ---- 반 설정 수정 ----
 const editForm = document.getElementById('edit-form');
+const edWeekdaysEl = document.getElementById('ed-weekdays');
 document.getElementById('edit-class').onclick = () => {
   document.getElementById('ed-name').value = current.name;
   document.getElementById('ed-schedule').value = current.schedule_text || '';
   document.getElementById('ed-late').value = current.late_after_min;
   document.getElementById('ed-duration').value = current.duration_min;
+  renderWeekdayPicker(edWeekdaysEl, current.weekdays || '');
   editForm.style.display = editForm.style.display === 'none' ? '' : 'none';
 };
 document.getElementById('ed-cancel').onclick = () => { editForm.style.display = 'none'; };
@@ -195,6 +201,7 @@ document.getElementById('ed-save').onclick = async () => {
     schedule_text: document.getElementById('ed-schedule').value,
     late_after_min: document.getElementById('ed-late').value,
     duration_min: document.getElementById('ed-duration').value,
+    weekdays: getWeekdayPickerValue(edWeekdaysEl),
   }});
   editForm.style.display = 'none';
   load();

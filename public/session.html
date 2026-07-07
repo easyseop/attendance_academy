@@ -29,13 +29,13 @@
     <p class="muted" style="margin-top:8px;">
       QR 화면은 교실 앞에, 터치 출석 화면은 입구 태블릿에 띄워두세요. 둘 다 함께 사용할 수 있습니다.
       NFC 태그를 붙여둔 경우 학생이 폰을 태그에 대기만 해도 출석됩니다 (반 관리 → NFC/인쇄 QR).
-      수업 종료를 누르면 미체크 학생은 결석으로 기록되고 학부모 알림이 대기열에 등록됩니다.</p>
+      수업 종료를 누르면 미체크 학생은 결석으로 기록됩니다.</p>
   </div>
 
   <div class="card">
     <h2>학생별 현황 <span class="muted" style="font-weight:400;">(자동 새로고침)</span></h2>
     <table>
-      <thead><tr><th>이름</th><th>상태</th><th>등원</th><th>하원</th><th>수동 정정</th></tr></thead>
+      <thead><tr><th>이름</th><th>상태</th><th>체크 시각</th><th>수동 정정</th></tr></thead>
       <tbody id="roster-rows"></tbody>
     </table>
   </div>
@@ -67,7 +67,6 @@ async function load() {
       <td><strong>${esc(r.name)}</strong></td>
       <td>${statusBadge(r.status)}${r.status && r.method !== 'qr' ? ` <span class="muted">(${METHOD_LABEL[r.method] || r.method})</span>` : ''}</td>
       <td class="muted">${r.checked_at ? esc(r.checked_at.slice(11, 16)) : '-'}</td>
-      <td class="muted">${r.left_at ? esc(r.left_at.slice(11, 16)) : '-'}</td>
       <td>
         <select onchange="mark(${r.id}, this.value); this.value='';">
           <option value="">변경...</option>
@@ -76,7 +75,7 @@ async function load() {
           <option value="absent">결석</option>
         </select>
       </td>
-    </tr>`).join('') || '<tr><td colspan="5" class="muted">이 반에 학생이 없습니다.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">이 반에 학생이 없습니다.</td></tr>';
 }
 
 async function mark(studentId, status) {

@@ -11,7 +11,6 @@
   <header class="topbar">
     <h1>📋 학원 출석체크</h1>
     <a href="/stats.html">출석 통계</a>
-    <a href="/notifications.html">알림 내역</a>
     <a href="#" id="logout-link">로그아웃</a>
   </header>
 
@@ -19,9 +18,13 @@
     <h2>새 반(커리큘럼) 만들기</h2>
     <div class="row">
       <input id="cls-name" placeholder="반 이름 (예: 중2 수학 A반)" style="flex:2;min-width:180px;">
-      <input id="cls-schedule" placeholder="시간표 메모 (예: 월수금 16:00)" style="flex:2;min-width:160px;">
+      <input id="cls-schedule" placeholder="시간표 메모 (예: 16:00 시작)" style="flex:2;min-width:160px;">
     </div>
-    <div class="row" style="margin-top:8px;">
+    <div style="margin-top:10px;">
+      <label class="muted" style="display:block;margin-bottom:6px;">수업 요일 (선택 안 하면 매일 표시)</label>
+      <div class="weekday-picker" id="cls-weekdays"></div>
+    </div>
+    <div class="row" style="margin-top:10px;">
       <label class="muted">지각 기준 <input id="cls-late" type="number" value="10" min="0" style="width:70px;">분</label>
       <label class="muted">수업 길이 <input id="cls-duration" type="number" value="90" min="0" style="width:70px;">분</label>
       <button id="cls-add">추가</button>
@@ -34,7 +37,10 @@
   </div>
 
   <div class="card">
-    <h2>반 목록</h2>
+    <div class="row" style="justify-content:space-between;">
+      <h2 id="today-title" style="margin:0;">반 목록</h2>
+      <button class="ghost" id="toggle-all" style="color:var(--primary);border-color:var(--primary);">전체 반 보기</button>
+    </div>
     <div id="class-list"><p class="muted">불러오는 중...</p></div>
   </div>
 
@@ -43,7 +49,7 @@
     <p class="muted" style="margin-bottom:10px;">
       이 주소 하나를 NFC 스티커에 기록하거나 QR로 인쇄해 붙여두면, 학생이 태그했을 때
       <strong>진행 중인 수업 중에서 자기 수업을 선택</strong>해 출석합니다 (수업이 하나면 자동 선택).
-      명단에 없는 학생은 이름·학부모 연락처를 직접 입력해 등록할 수 있습니다.
+      명단에 이름이 안 보이면 직접 입력할 수 있는데, 이때도 선생님이 등록해 둔 이름만 통과합니다.
       한 교실을 여러 반이 나눠 쓰거나 책상마다 붙일 때 편리합니다.
     </p>
     <div class="row">
@@ -60,18 +66,43 @@
 
 <script src="/js/common.js"></script>
 <script>
+const weekdaysEl = document.getElementById('cls-weekdays');
+renderWeekdayPicker(weekdaysEl, '');
+
+let todayWeekday = null;
+let showAll = false;
+
+function classForToday(c) {
+  if (!c.weekdays) return true; // 요일 미지정 = 매일 표시
+  return c.weekdays.split(',').map(Number).includes(todayWeekday);
+}
+
 async function load() {
-  const classes = await api('/api/admin/classes');
+  const [today, classes] = await Promise.all([
+    api('/api/admin/today'),
+    api('/api/admin/classes'),
+  ]);
+  todayWeekday = today.weekday;
+  document.getElementById('today-title').textContent = `📅 오늘(${today.label}) 수업`;
+  document.getElementById('toggle-all').textContent = showAll ? '오늘 수업만 보기' : '전체 반 보기';
+
+  const list = showAll ? classes : classes.filter(classForToday);
   const el = document.getElementById('class-list');
   if (!classes.length) {
     el.innerHTML = '<p class="muted">아직 반이 없습니다. 위에서 첫 반을 만들어 보세요.</p>';
     return;
   }
-  el.innerHTML = classes.map(c => `
+  if (!list.length) {
+    el.innerHTML = `<p class="muted">오늘(${today.label})은 예정된 수업이 없습니다.</p>`;
+    return;
+  }
+  el.innerHTML = list.map(c => `
     <div class="list-item">
       <div>
         <a class="title" href="/class.html?id=${c.id}">${esc(c.name)}</a>
-        <div class="muted">${esc(c.schedule_text) || '시간표 미입력'} · 학생 ${c.student_count}명</div>
+        <div class="muted">
+          ${esc(c.schedule_text) || '시간표 미입력'} · 요일 ${esc(weekdaysLabel(c.weekdays))} · 학생 ${c.student_count}명
+        </div>
       </div>
       <div class="row">
         ${c.active_session_id
@@ -80,6 +111,11 @@ async function load() {
       </div>
     </div>`).join('');
 }
+
+document.getElementById('toggle-all').onclick = () => {
+  showAll = !showAll;
+  load();
+};
 
 async function startSession(classId) {
   const { id } = await api(`/api/admin/classes/${classId}/sessions`, { method: 'POST' });
@@ -95,9 +131,11 @@ document.getElementById('cls-add').onclick = async () => {
       schedule_text: document.getElementById('cls-schedule').value,
       late_after_min: document.getElementById('cls-late').value,
       duration_min: document.getElementById('cls-duration').value,
+      weekdays: getWeekdayPickerValue(weekdaysEl),
     }});
     document.getElementById('cls-name').value = '';
     document.getElementById('cls-schedule').value = '';
+    renderWeekdayPicker(weekdaysEl, '');
     load();
   } catch (e) {
     if (e.message !== 'unauthorized') { errEl.textContent = e.message; errEl.style.display = 'block'; }

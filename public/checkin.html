@@ -44,25 +44,13 @@ function showError(msg) {
 }
 
 function showChecked(data) {
-  if (data.phase === 'out') {
-    // 하원
-    const time = (data.left_at || '').slice(11, 16);
-    panel.innerHTML = `
-      <div class="result-icon">👋</div>
-      <h1>${esc(data.student_name)}님 하원 완료!</h1>
-      <p class="muted" style="font-size:16px;">${esc(data.class_name)} · ${time} · 안녕히 가세요</p>
-      ${data.duplicate ? '<p class="muted">이미 하원 처리되었습니다.</p>' : ''}
-      <p class="muted" style="margin-top:16px;">학부모님께 하원 알림이 발송됩니다.</p>`;
-    return;
-  }
   const isLate = data.status === 'late';
   const time = (data.checked_at || '').slice(11, 16);
   panel.innerHTML = `
     <div class="result-icon">${isLate ? '🕐' : '✅'}</div>
     <h1>${esc(data.student_name)}님 ${isLate ? '지각 체크' : '출석 완료'}!</h1>
     <p class="muted" style="font-size:16px;">${esc(data.class_name)} · ${time}</p>
-    ${data.duplicate ? '<p class="muted">이미 출석 처리되었습니다. 나갈 때 다시 태그하면 하원 체크됩니다.</p>'
-      : '<p class="muted">나갈 때 다시 태그하면 하원 체크됩니다.</p>'}
+    ${data.duplicate ? '<p class="muted">이미 출석 처리된 수업입니다.</p>' : ''}
     ${data.self_registered ? '<p class="muted">명단 등록도 함께 완료되었습니다.</p>' : ''}
     <p class="muted" style="margin-top:16px;">이 화면을 닫으셔도 됩니다. 다음부터는 태그/스캔만 하면 자동 출석됩니다.</p>`;
 }

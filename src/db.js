@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS classes (
   late_after_min INTEGER NOT NULL DEFAULT 10,
   -- 수업 시작 후 이 시간(분)이 지나면 자동으로 수업 마감(미체크 → 결석). 0이면 자동 마감 안 함.
   duration_min INTEGER NOT NULL DEFAULT 90,
+  -- 이 반이 열리는 요일. 콤마로 구분된 0~6 (0=일요일 ... 6=토요일, JS Date.getDay() 기준).
+  -- 빈 문자열이면 요일 제한 없음(매일 표시).
+  weekdays TEXT NOT NULL DEFAULT '',
   -- NFC 태그/인쇄 QR에 담기는 반별 고정 토큰 (문 옆 태그에 1회 기록해두면 됨)
   nfc_token TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -61,8 +64,6 @@ CREATE TABLE IF NOT EXISTS attendance (
   -- qr: 회전 QR 스캔 / tap: NFC 태그·고정 QR / kiosk: 태블릿 이름 터치 / manual: 선생님 수동
   method TEXT NOT NULL DEFAULT 'qr' CHECK (method IN ('qr', 'tap', 'kiosk', 'manual')),
   checked_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-  -- 하원(체크아웃) 시각. 등원 후 다시 태그하면 기록됨. NULL이면 아직 하원 안 함.
-  left_at TEXT,
   UNIQUE (session_id, student_id)
 );
 
@@ -70,16 +71,6 @@ CREATE TABLE IF NOT EXISTS attendance (
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
-);
-
--- 학부모 알림 발송 대기열. 실제 발송(알림톡/SMS)은 외부 API 연동 지점.
-CREATE TABLE IF NOT EXISTS notifications (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-  phone TEXT NOT NULL,
-  message TEXT NOT NULL,
-  sent INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 `);
 
@@ -99,6 +90,11 @@ for (const row of db.prepare('SELECT id FROM classes WHERE nfc_token IS NULL').a
 // classes.duration_min (자동 마감 시간) 컬럼 추가
 if (!clsCols.includes('duration_min')) {
   db.exec('ALTER TABLE classes ADD COLUMN duration_min INTEGER NOT NULL DEFAULT 90');
+}
+
+// classes.weekdays (요일) 컬럼 추가
+if (!clsCols.includes('weekdays')) {
+  db.exec("ALTER TABLE classes ADD COLUMN weekdays TEXT NOT NULL DEFAULT ''");
 }
 
 // 학원 공용 태그 토큰 발급 (최초 1회)
@@ -127,10 +123,13 @@ if (attSql && !attSql.sql.includes("'tap'")) {
   `);
 }
 
-// attendance.left_at (하원 시각) 컬럼 추가
+// attendance.left_at (하원 시각) — 하원 기능 제거로 더 이상 사용하지 않아 정리
 const attCols = db.prepare("PRAGMA table_info(attendance)").all().map((c) => c.name);
-if (!attCols.includes('left_at')) {
-  db.exec('ALTER TABLE attendance ADD COLUMN left_at TEXT');
+if (attCols.includes('left_at')) {
+  db.exec('ALTER TABLE attendance DROP COLUMN left_at');
 }
+
+// notifications 테이블 — 학부모 알림 기능 제거로 더 이상 사용하지 않아 정리
+db.exec('DROP TABLE IF EXISTS notifications');
 
 module.exports = db;

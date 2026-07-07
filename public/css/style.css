@@ -114,3 +114,16 @@ tr:last-child td { border-bottom: none; }
   border: 1px solid var(--line); border-radius: 12px; font-weight: 600;
 }
 .roster-btn:hover { background: #eef2fb; border-color: var(--primary); color: var(--primary); }
+
+/* 요일 선택 칩 */
+.weekday-picker { display: flex; gap: 6px; flex-wrap: wrap; }
+.weekday-chip {
+  width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--card); color: var(--text); font-size: 14px; font-weight: 600;
+  padding: 0; cursor: pointer;
+}
+.weekday-chip:hover { border-color: var(--primary); }
+.weekday-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.weekday-chip.sunday { color: var(--red); }
+.weekday-chip.saturday { color: var(--primary); }
+.weekday-chip.active.sunday, .weekday-chip.active.saturday { color: #fff; }

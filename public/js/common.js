@@ -61,3 +61,28 @@ function statusBadge(status) {
   if (!status) return '<span class="badge none">미체크</span>';
   return `<span class="badge ${status}">${STATUS_LABEL[status]}</span>`;
 }
+
+// 요일 선택 칩 (일 월 화 수 목 금 토). 0=일요일 ... 6=토요일 (JS Date.getDay() 기준)
+const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
+function renderWeekdayPicker(container, selectedCsv = '') {
+  const selected = new Set(String(selectedCsv || '').split(',').filter((v) => v !== '').map(Number));
+  container.innerHTML = WEEKDAY_LABELS.map((label, day) => {
+    const extra = day === 0 ? ' sunday' : day === 6 ? ' saturday' : '';
+    return `<button type="button" class="weekday-chip${extra}${selected.has(day) ? ' active' : ''}" data-day="${day}">${label}</button>`;
+  }).join('');
+  for (const btn of container.querySelectorAll('.weekday-chip')) {
+    btn.onclick = () => btn.classList.toggle('active');
+  }
+}
+
+function getWeekdayPickerValue(container) {
+  return [...container.querySelectorAll('.weekday-chip.active')].map((b) => Number(b.dataset.day));
+}
+
+// 콤마 요일 문자열 → "월,수,금" 형태 표시용 라벨. 빈 값은 "매일".
+function weekdaysLabel(csv) {
+  const days = String(csv || '').split(',').filter((v) => v !== '').map(Number).sort((a, b) => a - b);
+  if (!days.length) return '매일';
+  return days.map((d) => WEEKDAY_LABELS[d]).join(',');
+}
